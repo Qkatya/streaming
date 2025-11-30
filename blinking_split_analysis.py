@@ -35,12 +35,13 @@ ROW_INDICES = None
 # ROW_INDICES = list(range(0, 4))#[3663, 3953, 3642, 317, 6117, 1710, 3252, 1820, 3847]
 
 # Random sampling configuration
-NUM_RANDOM_SAMPLES = 50#   None  # Set to None to process all rows, or a number to randomly sample
+NUM_RANDOM_SAMPLES = 1#   None  # Set to None to process all rows, or a number to randomly sample
 RANDOM_SEED = 42  # Set seed for reproducibility (None for different samples each run)
-
+THRESHOLD_FACTOR = 0.25
 # Model configuration - which prediction file to load
 MODEL_NAME = 'causal_preprocessor_encoder_with_smile'
-MODEL2_NAME = 'new21_baseline_blendshapes_normalized'
+MODEL2_NAME = 'causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side'
+# MODEL2_NAME = 'new21_baseline_blendshapes_normalized'
 
 MODEL_NAME_TO_PLOT = 'nemo_with_smile'
 MODEL2_NAME_TO_PLOT = 'old_fairseq'
@@ -48,17 +49,44 @@ MODEL2_NAME_TO_PLOT = 'old_fairseq'
 HISTORY_SIZE = 800
 LOOKAHEAD_SIZE = 1
 
+BLENDSHAPES_ORDERED = ['_neutral', 'browDownLeft', 'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight', 'cheekPuff', 'cheekSquintLeft', 'cheekSquintRight', 'eyeBlinkLeft', 'eyeBlinkRight',
+                       'eyeLookDownLeft', 'eyeLookDownRight', 'eyeLookInLeft', 'eyeLookInRight', 'eyeLookOutLeft', 'eyeLookOutRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeSquintLeft', 'eyeSquintRight', 
+                       'eyeWideLeft', 'eyeWideRight', 'jawForward', 'jawLeft', 'jawOpen', 'jawRight', 'mouthClose', 'mouthDimpleLeft', 'mouthDimpleRight', 'mouthFrownLeft', 'mouthFrownRight', 'mouthFunnel',
+                       'mouthLeft', 'mouthLowerDownLeft', 'mouthLowerDownRight', 'mouthPressLeft', 'mouthPressRight', 'mouthPucker', 'mouthRight', 'mouthRollLower', 'mouthRollUpper', 'mouthShrugLower', 
+                       'mouthShrugUpper', 'mouthSmileLeft', 'mouthSmileRight', 'mouthStretchLeft', 'mouthStretchRight', 'mouthUpperUpLeft', 'mouthUpperUpRight', 'noseSneerLeft', 'noseSneerRight']
+PROMINANT_MOUTH_BLENDSHAPES = ['mouthClose', 'mouthFunnel', 'mouthPucker', 'mouthDimpleLeft', 'mouthDimpleRight', 'mouthSmileRight', 'mouthFrownRight']
+PROMINANT_EYE_BLENDSHAPES = ['eyeBlinkRight', 'eyeLookInRight', 'eyeLookOutRight']
+PROMINANT_JAW_BLENDSHAPES = ['jawRight', 'jawOpen']
+CHEEKS_BLENDSHAPES = ['cheekPuff', 'cheekSquintLeft' ,'cheekSquintRight']
+BROW_BLENDSHAPES = ['browDownLeft', 'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight']
+
 # Blendshapes to plot
-BLENDSHAPES_TO_PLOT = ['eyeBlinkRight', 'jawOpen', 'mouthFunnel', 'cheekPuff', 'mouthSmileRight']
+BLENDSHAPES_TO_PLOT = BLENDSHAPES_ORDERED
+# BLENDSHAPES_TO_PLOT = ['eyeBlinkRight', 'jawOpen', 'mouthFunnel', 'cheekPuff', 'mouthSmileRight']
 
 # Analysis flags - control which metrics to calculate
-CALCULATE_BLINK_METRICS = False# True  # ROC curve analysis for blink detection
-CALCULATE_CORRELATION_METRICS = True  # PCC, L1, L2 on raw predictions
+CALCULATE_BLINK_METRICS = True  # ROC curve analysis for blink detection
+CALCULATE_CORRELATION_METRICS = False  # PCC, L1, L2 on raw predictions
 CALCULATE_DIFF_METRICS = False#True  # PCC, L1, L2 on frame-to-frame differences
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+def get_blendshapes_category_name():
+    """Get a human-readable name for the current BLENDSHAPES_TO_PLOT category."""
+    if BLENDSHAPES_TO_PLOT == PROMINANT_MOUTH_BLENDSHAPES:
+        return "Prominent Mouth Blendshapes"
+    elif BLENDSHAPES_TO_PLOT == PROMINANT_EYE_BLENDSHAPES:
+        return "Prominent Eye Blendshapes"
+    elif BLENDSHAPES_TO_PLOT == PROMINANT_JAW_BLENDSHAPES:
+        return "Prominent Jaw Blendshapes"
+    elif BLENDSHAPES_TO_PLOT == CHEEKS_BLENDSHAPES:
+        return "Cheeks Blendshapes"
+    elif BLENDSHAPES_TO_PLOT == BROW_BLENDSHAPES:
+        return "Brow Blendshapes"
+    else:
+        return "Custom Blendshapes"
 
 def plot_each_bs(concatenated_gt, concatenated_pred, ):
 
@@ -107,6 +135,7 @@ def plot_each_bs(concatenated_gt, concatenated_pred, ):
         )
 
     # Update layout
+    category_name = get_blendshapes_category_name()
     fig.update_layout(
         title_text=f"Blendshapes Comparison: GT vs Prediction (Right Side Only)<br>"
                    f"<sub>{MODEL_NAME}_H{HISTORY_SIZE}_LA{LOOKAHEAD_SIZE}</sub><br>",
@@ -175,8 +204,10 @@ def plot_one_bs(gt, pred, ):
     )
 
     # Update layout
+    category_name = get_blendshapes_category_name()
     fig.update_layout(
         title_text=f"Blendshapes Comparison: GT vs Prediction (Right Side Only)<br>"
+                   f"<sub>{category_name}</sub><br>"
                    f"<sub>{MODEL_NAME}_H{HISTORY_SIZE}_LA{LOOKAHEAD_SIZE}</sub><br>",
         title_x=0.5,
         title_xanchor='center',
@@ -342,7 +373,7 @@ def plot_gt_pred_time(gt, pred, blendshapes, num_frames=1000):
     plt.tight_layout()
     plt.show()
             
-def calculate_correlation_and_distance_metrics(gt, pred, significant_movenents=None, blendshape_names=None, use_diff=False, blendshapes_to_analyze=None):
+def calculate_correlation_and_distance_metrics(gt, pred, significant_gt_movenents=None, significant_pred_movenents=None, blendshape_names=None, use_diff=False, blendshapes_to_analyze=None):
     assert gt.shape == pred.shape, f"GT and Pred shapes must match: {gt.shape} vs {pred.shape}"
     
     # Determine which blendshapes to analyze
@@ -354,8 +385,10 @@ def calculate_correlation_and_distance_metrics(gt, pred, significant_movenents=N
         # Filter GT and Pred to only include selected blendshapes
         gt = gt[:, blendshape_indices]
         pred = pred[:, blendshape_indices]
-        if significant_movenents is not None:
-            significant_movenents = significant_movenents[:, blendshape_indices]
+        if significant_gt_movenents is not None:
+            significant_gt_movenents = significant_gt_movenents[:, blendshape_indices]
+        if significant_pred_movenents is not None:
+            significant_pred_movenents = significant_pred_movenents[:, blendshape_indices]
         # plot_gt_pred_time(gt, pred)
         
         original_gt = gt.copy()
@@ -404,8 +437,8 @@ def calculate_correlation_and_distance_metrics(gt, pred, significant_movenents=N
     pred_original = pred.copy()
     
     for i in range(num_blendshapes):
-        gt_bs = gt[:, i]*significant_movenents[:,i]
-        pred_bs = pred[:, i]*significant_movenents[:,i]
+        gt_bs = gt[:, i]*significant_gt_movenents[:,i]
+        pred_bs = pred[:, i]*significant_pred_movenents[:,i]
         
         # PCC for this blendshape
         pcc, _ = pearsonr(gt_bs, pred_bs)
@@ -715,7 +748,7 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
     
     # Update layout
     fig.update_layout(
-        title_text=f"Per-Blendshape Metrics Comparison{title_suffix}, NUM_RANDOM_SAMPLES: {NUM_RANDOM_SAMPLES}",
+        title_text=f"Per-Blendshape Metrics, threshold factor: {THRESHOLD_FACTOR}, #samples: {NUM_RANDOM_SAMPLES}, {get_blendshapes_category_name()}",
         title_x=0.5,
         title_xanchor='center',
         title_font_size=20,
@@ -753,11 +786,71 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
     
     return fig
 
-def get_significant_movenents_mask(gt_blendshapes):
-    significant_movenents_mask = np.zeros(gt_blendshapes.shape, dtype=bool)
-    for i in range(gt_blendshapes.shape[1]):
-        th = 0.5*np.max(gt_blendshapes[:, i])
-        significant_movenents_mask[:, i] = significant_movenents_mask[:, i] | (np.abs(gt_blendshapes[:, i]) > th)
+def plot_velocity_agreement_only(metrics1, model1_name):
+    """Create a bar plot showing only velocity agreement for model 1.
+    
+    Args:
+        metrics1: Metrics dictionary for model 1
+        model1_name: Name of model 1
+    """
+    blendshape_names = metrics1.get('analyzed_blendshapes')
+    if blendshape_names is None:
+        print("No blendshape names available for plotting")
+        return
+    
+    num_blendshapes = len(blendshape_names)
+    
+    # Create a color palette for blendshapes
+    colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+    # Extend colors if needed
+    while len(colors) < num_blendshapes:
+        colors.extend(colors)
+    colors = colors[:num_blendshapes]
+    
+    # Create single plot for velocity agreement
+    fig = go.Figure()
+    
+    # Plot Velocity Agreement for model 1 only
+    for i, bs_name in enumerate(blendshape_names):
+        vel_agree_value = metrics1['per_blendshape_velocity_agreement'][i]
+        fig.add_trace(
+            go.Bar(
+                x=[bs_name],
+                y=[vel_agree_value],
+                name=bs_name,
+                marker_color=colors[i],
+                showlegend=False,
+                text=[f'{vel_agree_value:.1f}%'],
+                textposition='outside'
+            )
+        )
+    
+    # Update layout
+    category_name = get_blendshapes_category_name()
+    fig.update_layout(
+        title_text=f"Velocity Agreement (%) - {model1_name}, threshold factor: {THRESHOLD_FACTOR}, #samples: {NUM_RANDOM_SAMPLES}, {category_name}",
+        title_x=0.5,
+        title_xanchor='center',
+        title_font_size=20,
+        height=600,
+        width=800,  # Narrower figure width
+        yaxis_title="Velocity Agreement (%)",
+        xaxis_title="Blendshapes",
+        xaxis_tickangle=45
+    )
+    
+    fig.show()
+    
+    return fig
+
+def get_significant_movenents_mask(blendshapes, threshold_factor=0.5):
+    significant_movenents_mask = np.zeros(blendshapes.shape, dtype=bool)
+    for i in range(blendshapes.shape[1]):
+        th = threshold_factor*np.max(blendshapes[:, i])
+        significant_movenents_mask[:, i] = significant_movenents_mask[:, i] | (np.abs(blendshapes[:, i]) > th)
     return significant_movenents_mask
 
 # ============================================================================
@@ -795,7 +888,9 @@ def main():
     all_diff_gt_blendshapes = []
     all_diff_pred_blendshapes = []
     all_diff_pred_blendshapes_model2 = []
-    all_significant_movenents = []
+    all_significant_gt_movenents = []
+    all_significant_pred_movenents = []
+    all_significant_pred_model2_movenents = []
     
     # Process each file
     for run_path, tar_id, side in tqdm(run_path_tar_id_side_tuples, desc="Loading files"):
@@ -859,7 +954,9 @@ def main():
         diff_pred_blendshapes = np.diff(pred_blendshapes_smooth, axis=0)
         diff_pred_blendshapes_model2 = np.diff(pred_blendshapes_model2_smooth, axis=0)
         
-        significant_movenents = get_significant_movenents_mask(gt_blendshapes_smooth[:-1,:])
+        significant_gt_movenents = get_significant_movenents_mask(gt_blendshapes_smooth[:-1,:], threshold_factor=THRESHOLD_FACTOR)
+        significant_pred_movenents = significant_gt_movenents #get_significant_movenents_mask(pred_blendshapes_smooth[:-1,:], threshold_factor=THRESHOLD_FACTOR)
+        significant_pred_model2_movenents = significant_gt_movenents #get_significant_movenents_mask(pred_blendshapes_model2_smooth[:-1,:], threshold_factor=THRESHOLD_FACTOR)
         
         # Store data
         all_gt_blendshapes.append(gt_blendshapes)
@@ -870,7 +967,9 @@ def main():
         all_pred_blendshapes_model2.append(pred_blendshapes_model2)
         current_frame += gt_blendshapes.shape[0]
         file_boundaries.append(current_frame)
-        all_significant_movenents.append(significant_movenents)
+        all_significant_gt_movenents.append(significant_gt_movenents)
+        all_significant_pred_movenents.append(significant_pred_movenents)
+        all_significant_pred_model2_movenents.append(significant_pred_model2_movenents)
     
     # Remove last boundary (end of last file)
     if file_boundaries:
@@ -884,7 +983,9 @@ def main():
     concatenated_diff_gt = np.concatenate(all_diff_gt_blendshapes, axis=0)
     concatenated_diff_pred = np.concatenate(all_diff_pred_blendshapes, axis=0)
     concatenated_diff_pred_model2 = np.concatenate(all_diff_pred_blendshapes_model2, axis=0)
-    concatenated_significant_movenents = np.concatenate(all_significant_movenents, axis=0)
+    concatenated_significant_gt_movenents = np.concatenate(all_significant_gt_movenents, axis=0)
+    concatenated_significant_pred_movenents = np.concatenate(all_significant_pred_movenents, axis=0)
+    concatenated_significant_pred_model2_movenents = np.concatenate(all_significant_pred_model2_movenents, axis=0)
     
     print(f"Concatenated GT shape: {concatenated_gt.shape}")
     print(f"Concatenated {MODEL_NAME} Pred shape: {concatenated_pred.shape}")
@@ -892,7 +993,9 @@ def main():
     print(f"Concatenated {MODEL_NAME} Diff GT shape: {concatenated_diff_gt.shape}")
     print(f"Concatenated {MODEL_NAME} Diff Pred shape: {concatenated_diff_pred.shape}")
     print(f"Concatenated {MODEL2_NAME} Diff Pred shape: {concatenated_diff_pred_model2.shape}")
-    print(f"Concatenated significant movenents shape: {concatenated_significant_movenents.shape}")
+    print(f"Concatenated significant GT movenents shape: {concatenated_significant_gt_movenents.shape}")
+    print(f"Concatenated significant Pred movenents shape: {concatenated_significant_pred_movenents.shape}")
+    print(f"Concatenated significant Pred2 movenents shape: {concatenated_significant_pred_model2_movenents.shape}")
     
     # Calculate correlation and distance metrics on raw values
     if CALCULATE_CORRELATION_METRICS:
@@ -900,7 +1003,8 @@ def main():
         metrics_model1 = calculate_correlation_and_distance_metrics(
             concatenated_diff_gt, 
             concatenated_diff_pred, 
-            concatenated_significant_movenents,
+            concatenated_significant_gt_movenents,
+            concatenated_significant_pred_movenents,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=False,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
@@ -908,7 +1012,8 @@ def main():
         metrics_model2 = calculate_correlation_and_distance_metrics(
             concatenated_diff_gt, 
             concatenated_diff_pred_model2, 
-            concatenated_significant_movenents,
+            concatenated_significant_gt_movenents,
+            concatenated_significant_pred_model2_movenents,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=False,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
@@ -931,6 +1036,12 @@ def main():
             MODEL2_NAME,
             title_suffix=" (Raw Values)"
         )
+        
+        # Plot velocity agreement only
+        plot_velocity_agreement_only(
+            metrics_model1,
+            MODEL_NAME
+        )
     
     # Calculate correlation and distance metrics on frame-to-frame differences
     if CALCULATE_DIFF_METRICS:
@@ -938,7 +1049,7 @@ def main():
         metrics_diff_model1 = calculate_correlation_and_distance_metrics(
             concatenated_gt, 
             concatenated_pred, 
-            concatenated_significant_movenents = None,
+            concatenated_significant_gt_movenents = None,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=True,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
@@ -946,7 +1057,7 @@ def main():
         metrics_diff_model2 = calculate_correlation_and_distance_metrics(
             concatenated_gt, 
             concatenated_pred_model2, 
-            concatenated_significant_movenents = None,
+            concatenated_significant_gt_movenents = None,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=True,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
@@ -969,6 +1080,12 @@ def main():
             MODEL_NAME,
             MODEL2_NAME,
             title_suffix=" (Frame-to-Frame Differences)"
+        )
+        
+        # Plot velocity agreement only
+        plot_velocity_agreement_only(
+            metrics_diff_model1,
+            MODEL_NAME
         )
     
     # Create subplot figure
@@ -1067,9 +1184,9 @@ def main():
         gt_th = 0.06
         quantizer = 8
         dense_region = np.linspace(0, 0.1, 300, endpoint=True)
-        sparse_region1 = np.linspace(-10, -1, 30, endpoint=True)
-        sparse_region2 = np.linspace(-1, 0, 50, endpoint=False)
-        sparse_region3 = np.linspace(0.1, 3, 40, endpoint=True)
+        sparse_region1 = np.linspace(-10, -1, 300, endpoint=True)
+        sparse_region2 = np.linspace(-1, 0, 500, endpoint=False)
+        sparse_region3 = np.linspace(0.1, 3, 400, endpoint=True)
 
         th_list = np.unique(np.concatenate([sparse_region1, sparse_region2, dense_region, sparse_region3]))
         # th_list = np.array([0.02, 0.05, 0.1])
@@ -1086,7 +1203,25 @@ def main():
         fig_roc.add_trace(go.Scatter(x=FPR_lst, y=TPR_lst, mode='lines+markers', name=MODEL_NAME, line=dict(color='blue', width=3), marker=dict(size=8)))
         fig_roc.add_trace(go.Scatter(x=FPR_lst2, y=TPR_lst2, mode='lines+markers', name=MODEL2_NAME, line=dict(color='red', width=3), marker=dict(size=8)))
         fig_roc.add_trace(go.Scatter(x=[0, 100], y=[0, 100], mode='lines', name='Random Classifier', line=dict(color='gray', width=2, dash='dash')))
-        fig_roc.update_layout(title=dict(text=f'ROC Curve - Blink Detection', font=dict(size=30)), xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=20)), yaxis_title=dict(text='True Positive Rate (%)', font=dict(size=20)), xaxis=dict(range=[0, 100], tickfont=dict(size=16)), yaxis=dict(range=[0, 100], tickfont=dict(size=16)), showlegend=True, legend=dict(font=dict(size=18)), width=800, height=600)
+        
+        # Determine x-axis range based on actual data (with some padding)
+        max_fpr = max(max(FPR_lst), max(FPR_lst2))
+        min_fpr = min(min(FPR_lst), min(FPR_lst2))
+        fpr_range = max_fpr - min_fpr
+        x_range_max = min(100, max_fpr + 0.1 * fpr_range) if fpr_range > 0 else 100
+        x_range_min = max(0, min_fpr - 0.1 * fpr_range) if fpr_range > 0 else 0
+        
+        fig_roc.update_layout(
+            title=dict(text=f'ROC Curve - Blink Detection', font=dict(size=30)), 
+            xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=20)), 
+            yaxis_title=dict(text='True Positive Rate (%)', font=dict(size=20)), 
+            xaxis=dict(range=[x_range_min, x_range_max], tickfont=dict(size=16)), 
+            yaxis=dict(range=[0, 100], tickfont=dict(size=16)), 
+            showlegend=True, 
+            legend=dict(font=dict(size=18)), 
+            width=1400,  # Increased width for better visibility
+            height=800   # Increased height as well
+        )
         # fig_roc.update_layout(title=f'ROC Curve - Blink Detection - Quantizer {quantizer}, gt_th {gt_th}', xaxis_title='False Positive Rate (%)', yaxis_title='True Positive Rate (%)', xaxis=dict(range=[0, 100]), yaxis=dict(range=[0, 100]), showlegend=True, width=800, height=600)
         fig_roc.show()
     
