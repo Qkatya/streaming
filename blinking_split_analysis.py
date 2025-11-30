@@ -28,17 +28,22 @@ SPLIT_DF_PATH = '/mnt/ML/ModelsTrainResults/katya.ivantsiv/splits/LOUD_GIP_gener
 # SPLIT_DF_PATH = '/mnt/ML/Development/ML_Data_DB/v2/splits/full/20250402_split_1/LOUD_GIP_general_clean_250415_v2.pkl'
 
 # Row indices to process from the split (same as in streaming_split_inference.py)
-ROW_INDICES = [3663]  # Will be randomly sampled from the dataframe in main()
+ROW_INDICES = None
+# ROW_INDICES = [3663, 3953]  # Will be randomly sampled from the dataframe in main()
+# ROW_INDICES = [3663]  # Will be randomly sampled from the dataframe in main()
 # ROW_INDICES = [3663, 3953, 3642, 317, 6117, 1710, 3252, 1820, 3847]
 # ROW_INDICES = list(range(0, 4))#[3663, 3953, 3642, 317, 6117, 1710, 3252, 1820, 3847]
 
 # Random sampling configuration
-NUM_RANDOM_SAMPLES = None#   None  # Set to None to process all rows, or a number to randomly sample
+NUM_RANDOM_SAMPLES = 50#   None  # Set to None to process all rows, or a number to randomly sample
 RANDOM_SEED = 42  # Set seed for reproducibility (None for different samples each run)
 
 # Model configuration - which prediction file to load
 MODEL_NAME = 'causal_preprocessor_encoder_with_smile'
 MODEL2_NAME = 'new21_baseline_blendshapes_normalized'
+
+MODEL_NAME_TO_PLOT = 'nemo_with_smile'
+MODEL2_NAME_TO_PLOT = 'old_fairseq'
 # MODEL_NAME = 'causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side'
 HISTORY_SIZE = 800
 LOOKAHEAD_SIZE = 1
@@ -48,13 +53,152 @@ BLENDSHAPES_TO_PLOT = ['eyeBlinkRight', 'jawOpen', 'mouthFunnel', 'cheekPuff', '
 
 # Analysis flags - control which metrics to calculate
 CALCULATE_BLINK_METRICS = False# True  # ROC curve analysis for blink detection
-CALCULATE_CORRELATION_METRICS = False  # PCC, L1, L2 on raw predictions
-CALCULATE_DIFF_METRICS = True  # PCC, L1, L2 on frame-to-frame differences
+CALCULATE_CORRELATION_METRICS = True  # PCC, L1, L2 on raw predictions
+CALCULATE_DIFF_METRICS = False#True  # PCC, L1, L2 on frame-to-frame differences
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
+def plot_each_bs(concatenated_gt, concatenated_pred, ):
+
+    fig = make_subplots(
+        rows=len(BLENDSHAPES_TO_PLOT), 
+        cols=1, 
+        shared_xaxes=True,
+        subplot_titles=tuple(f"<span style='font-size:16px'>{bs}</span>" for bs in BLENDSHAPES_TO_PLOT),
+        vertical_spacing=0.008
+    )
+
+    # Plot each blendshape
+    for plot_idx, bs_name in enumerate(BLENDSHAPES_TO_PLOT, 1):
+        bs_idx = BLENDSHAPES_ORDERED.index(bs_name)
+        
+        # Get data for this blendshape
+        gt_data = concatenated_gt[:, bs_idx]
+        pred_data = concatenated_pred[:, bs_idx]
+        
+        # Add GT trace
+        fig.add_trace(
+            go.Scatter(
+                x=np.arange(len(gt_data)),
+                y=gt_data,
+                name='GT',
+                mode='lines',
+                line=dict(color='blue', width=2),
+                showlegend=(plot_idx == 1),
+                legendgroup='GT'
+            ),
+            row=plot_idx, col=1
+        )
+        
+        # Add prediction trace
+        fig.add_trace(
+            go.Scatter(
+                x=np.arange(len(pred_data)),
+                y=pred_data,
+                name='Pred',
+                mode='lines',
+                line=dict(color='#d62728', width=2),  # Red
+                showlegend=(plot_idx == 1),
+                legendgroup='Pred'
+            ),
+            row=plot_idx, col=1
+        )
+
+    # Update layout
+    fig.update_layout(
+        title_text=f"Blendshapes Comparison: GT vs Prediction (Right Side Only)<br>"
+                   f"<sub>{MODEL_NAME}_H{HISTORY_SIZE}_LA{LOOKAHEAD_SIZE}</sub><br>",
+        title_x=0.5,
+        title_xanchor='center',
+        title_font_size=20,
+        height=300 * len(BLENDSHAPES_TO_PLOT),
+        hovermode='x unified',
+        legend=dict(
+            font=dict(size=9),
+            yanchor="top",
+            y=1,
+            xanchor="right",
+            x=-0.01,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="gray",
+            borderwidth=1
+        ),
+        margin=dict(l=100)
+    )
+
+    fig.update_xaxes(title_text="Frame", row=len(BLENDSHAPES_TO_PLOT), col=1)
+    fig.show()
+
+def plot_one_bs(gt, pred, ):
+
+    fig = make_subplots(
+        rows=1, 
+        cols=1, 
+        shared_xaxes=True,
+        vertical_spacing=0.008
+    )
+
+    # Plot each blendshape
+        
+    # Get data for this blendshape
+    gt_data = gt
+    pred_data = pred
+    
+    # Add GT trace
+    fig.add_trace(
+        go.Scatter(
+            x=np.arange(len(gt_data)),
+            y=gt_data,
+            name='GT',
+            mode='lines',
+            line=dict(color='blue', width=2),
+            showlegend=True,
+            legendgroup='GT'
+        ),
+        row=1, col=1
+    )
+    
+    # Add prediction trace
+    fig.add_trace(
+        go.Scatter(
+            x=np.arange(len(pred_data)),
+            y=pred_data,
+            name='Pred',
+            mode='lines',
+            line=dict(color='#d62728', width=2),  # Red
+            showlegend=True,
+            legendgroup='Pred'
+        ),
+        row=1, col=1
+    )
+
+    # Update layout
+    fig.update_layout(
+        title_text=f"Blendshapes Comparison: GT vs Prediction (Right Side Only)<br>"
+                   f"<sub>{MODEL_NAME}_H{HISTORY_SIZE}_LA{LOOKAHEAD_SIZE}</sub><br>",
+        title_x=0.5,
+        title_xanchor='center',
+        title_font_size=20,
+        height=300,
+        hovermode='x unified',
+        legend=dict(
+            font=dict(size=9),
+            yanchor="top",
+            y=1,
+            xanchor="right",
+            x=-0.01,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="gray",
+            borderwidth=1
+        ),
+        margin=dict(l=100)
+    )
+
+    fig.update_xaxes(title_text="Frame", row=1, col=1)
+    fig.show()
+    
 def get_run_paths_from_split(df_path: str, row_indices: list = None, side_filter: str = None, 
                             num_random_samples: int = None, random_seed: int = None):
     """Load run_paths, tar_ids, and side from split dataframe.
@@ -168,17 +312,6 @@ def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, g
     return TPR_lst, FNR_lst, FPR_lst
 
 def velocity_agreement(gt_bs, pred_bs, already_diff=False):
-    """Calculate velocity agreement metrics between ground truth and prediction for a single blendshape.
-    
-    Args:
-        gt_bs: Ground truth for one blendshape (1D array)
-        pred_bs: Prediction for one blendshape (1D array)
-        already_diff: If True, data is already differenced, don't apply savgol and diff again
-        
-    Returns:
-        sign_match: Percentage of time velocity has same sign (0-1)
-        r: Pearson correlation of velocities
-    """
     if already_diff:
         # Data is already differenced, just use it directly
         da = gt_bs
@@ -209,28 +342,7 @@ def plot_gt_pred_time(gt, pred, blendshapes, num_frames=1000):
     plt.tight_layout()
     plt.show()
             
-def calculate_correlation_and_distance_metrics(gt, pred, blendshape_names=None, use_diff=False, blendshapes_to_analyze=None):
-    """Calculate PCC, L1, L2, and direction agreement metrics for GT vs Pred.
-    
-    Args:
-        gt: Ground truth array of shape (num_frames, num_blendshapes)
-        pred: Prediction array of shape (num_frames, num_blendshapes)
-        blendshape_names: Optional list of ALL blendshape names (for indexing)
-        use_diff: If True, calculate metrics on frame-to-frame differences instead of raw values
-        blendshapes_to_analyze: Optional list of specific blendshape names to analyze. If None, analyze all.
-        
-    Returns:
-        Dictionary containing:
-            - global_pcc: Pearson correlation coefficient across all values
-            - global_l1: Mean absolute error (L1 distance)
-            - global_l2: Root mean squared error (L2 distance)
-            - global_direction_agreement: % of time movement is in same direction (only for diff mode)
-            - per_blendshape_pcc: PCC for each blendshape
-            - per_blendshape_l1: L1 for each blendshape
-            - per_blendshape_l2: L2 for each blendshape
-            - per_blendshape_direction_agreement: Direction agreement for each blendshape (only for diff mode)
-            - analyzed_blendshapes: List of blendshape names that were analyzed
-    """
+def calculate_correlation_and_distance_metrics(gt, pred, significant_movenents=None, blendshape_names=None, use_diff=False, blendshapes_to_analyze=None):
     assert gt.shape == pred.shape, f"GT and Pred shapes must match: {gt.shape} vs {pred.shape}"
     
     # Determine which blendshapes to analyze
@@ -242,8 +354,13 @@ def calculate_correlation_and_distance_metrics(gt, pred, blendshape_names=None, 
         # Filter GT and Pred to only include selected blendshapes
         gt = gt[:, blendshape_indices]
         pred = pred[:, blendshape_indices]
+        if significant_movenents is not None:
+            significant_movenents = significant_movenents[:, blendshape_indices]
         # plot_gt_pred_time(gt, pred)
         
+        original_gt = gt.copy()
+        original_pred = pred.copy()
+
         print(f"  Analyzing {len(blendshape_indices)} blendshapes: {analyzed_names}")
     else:
         analyzed_names = blendshape_names if blendshape_names is not None else None
@@ -251,13 +368,15 @@ def calculate_correlation_and_distance_metrics(gt, pred, blendshape_names=None, 
     
     # Calculate frame-to-frame differences if requested
     if use_diff:
-        gt = np.diff(gt, axis=0)
-        pred = np.diff(pred, axis=0)
+        gt_smooth = savgol_filter(gt, 9, 2, axis=0, mode='interp')
+        pred_smooth = savgol_filter(pred, 9, 2, axis=0, mode='interp')
+        gt = np.diff(gt_smooth, axis=0)
+        pred = np.diff(pred_smooth, axis=0)
         print(f"  Using frame-to-frame differences: shape {gt.shape}")
     
     # Global metrics (flatten all values)
-    gt_flat = gt.flatten()
-    pred_flat = pred.flatten()
+    gt_flat = gt.flatten(order='F')
+    pred_flat = pred.flatten(order='F')
     
     global_pcc, _ = pearsonr(gt_flat, pred_flat)
     global_l1 = np.mean(np.abs(gt_flat - pred_flat))
@@ -267,8 +386,8 @@ def calculate_correlation_and_distance_metrics(gt, pred, blendshape_names=None, 
     global_direction_agreement = None
     if use_diff:
         # Calculate percentage of time both GT and Pred have the same sign (direction)
-        same_direction = np.sign(gt_flat) == np.sign(pred_flat)
-        global_direction_agreement = np.mean(same_direction) * 100  # Convert to percentage
+        same_direction = np.sign(gt_flat) == np.sign(pred_flat) #sign_match = np.mean(np.sign(da) == np.sign(db))
+        global_direction_agreement = np.mean(same_direction) * 100  # Convert to percentage 
     
     # Per-blendshape metrics
     num_blendshapes = gt.shape[1]
@@ -285,8 +404,8 @@ def calculate_correlation_and_distance_metrics(gt, pred, blendshape_names=None, 
     pred_original = pred.copy()
     
     for i in range(num_blendshapes):
-        gt_bs = gt[:, i]
-        pred_bs = pred[:, i]
+        gt_bs = gt[:, i]*significant_movenents[:,i]
+        pred_bs = pred[:, i]*significant_movenents[:,i]
         
         # PCC for this blendshape
         pcc, _ = pearsonr(gt_bs, pred_bs)
@@ -309,14 +428,14 @@ def calculate_correlation_and_distance_metrics(gt, pred, blendshape_names=None, 
         per_blendshape_normalized_rmse.append(normalized_rmse)
         
         # Direction agreement (only for differences)
-        if use_diff:
+        if True: #use_diff:
             same_direction = np.sign(gt_bs) == np.sign(pred_bs)
             direction_agreement = np.mean(same_direction) * 100  # Convert to percentage
             per_blendshape_direction_agreement.append(direction_agreement)
         
         # Velocity agreement with Savitzky-Golay filtering
         # If already using diff, pass the diff data directly; otherwise compute from original
-        if use_diff:
+        if True: #use_diff:
             # Data is already differenced, use it directly
             vel_agree, vel_corr = velocity_agreement(gt_bs, pred_bs, already_diff=True)
         else:
@@ -462,8 +581,8 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
         horizontal_spacing=0.08
     )
     
-    # Prepare data for plotting
-    models = [model1_name, model2_name]
+    # Prepare data for plotting - use display names for plots
+    models = [MODEL_NAME_TO_PLOT, MODEL2_NAME_TO_PLOT]
     
     # Plot PCC
     for i, bs_name in enumerate(blendshape_names):
@@ -475,7 +594,9 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
                 name=bs_name,
                 marker_color=colors[i],
                 showlegend=True,
-                legendgroup=bs_name
+                legendgroup=bs_name,
+                text=[f'{v:.3f}' for v in pcc_values],
+                textposition='outside'
             ),
             row=1, col=1
         )
@@ -490,7 +611,9 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
                 name=bs_name,
                 marker_color=colors[i],
                 showlegend=False,
-                legendgroup=bs_name
+                legendgroup=bs_name,
+                text=[f'{v:.3f}' for v in l1_values],
+                textposition='outside'
             ),
             row=1, col=2
         )
@@ -505,7 +628,9 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
                 name=bs_name,
                 marker_color=colors[i],
                 showlegend=False,
-                legendgroup=bs_name
+                legendgroup=bs_name,
+                text=[f'{v:.3f}' for v in l2_values],
+                textposition='outside'
             ),
             row=1, col=3
         )
@@ -520,7 +645,9 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
                 name=bs_name,
                 marker_color=colors[i],
                 showlegend=False,
-                legendgroup=bs_name
+                legendgroup=bs_name,
+                text=[f'{v:.3f}' for v in norm_rmse_values],
+                textposition='outside'
             ),
             row=1, col=4
         )
@@ -538,7 +665,9 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
                 name=bs_name,
                 marker_color=colors[i],
                 showlegend=False,
-                legendgroup=bs_name
+                legendgroup=bs_name,
+                text=[f'{v:.1f}' for v in vel_agree_values],
+                textposition='outside'
             ),
             row=2, col=1
         )
@@ -556,7 +685,9 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
                 name=bs_name,
                 marker_color=colors[i],
                 showlegend=False,
-                legendgroup=bs_name
+                legendgroup=bs_name,
+                text=[f'{v:.3f}' for v in vel_corr_values],
+                textposition='outside'
             ),
             row=2, col=2
         )
@@ -575,14 +706,16 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
                     name=bs_name,
                     marker_color=colors[i],
                     showlegend=False,
-                    legendgroup=bs_name
+                    legendgroup=bs_name,
+                    text=[f'{v:.1f}' for v in dir_agree_values],
+                    textposition='outside'
                 ),
                 row=2, col=3
             )
     
     # Update layout
     fig.update_layout(
-        title_text=f"Per-Blendshape Metrics Comparison{title_suffix}",
+        title_text=f"Per-Blendshape Metrics Comparison{title_suffix}, NUM_RANDOM_SAMPLES: {NUM_RANDOM_SAMPLES}",
         title_x=0.5,
         title_xanchor='center',
         title_font_size=20,
@@ -620,6 +753,13 @@ def plot_metrics_bar_chart(metrics1, metrics2, model1_name, model2_name, title_s
     
     return fig
 
+def get_significant_movenents_mask(gt_blendshapes):
+    significant_movenents_mask = np.zeros(gt_blendshapes.shape, dtype=bool)
+    for i in range(gt_blendshapes.shape[1]):
+        th = 0.5*np.max(gt_blendshapes[:, i])
+        significant_movenents_mask[:, i] = significant_movenents_mask[:, i] | (np.abs(gt_blendshapes[:, i]) > th)
+    return significant_movenents_mask
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -652,6 +792,10 @@ def main():
     all_pred_blendshapes_model2 = []
     file_boundaries = []
     current_frame = 0
+    all_diff_gt_blendshapes = []
+    all_diff_pred_blendshapes = []
+    all_diff_pred_blendshapes_model2 = []
+    all_significant_movenents = []
     
     # Process each file
     for run_path, tar_id, side in tqdm(run_path_tar_id_side_tuples, desc="Loading files"):
@@ -706,12 +850,27 @@ def main():
             pred_blendshapes_model2 = pred_blendshapes_model2[:gt_len]
             print(f"Truncated {MODEL2_NAME} prediction: {pred_len_model2} -> {gt_len} frames")
         
+        
+        gt_blendshapes_smooth = savgol_filter(gt_blendshapes, 9, 2, axis=0, mode='interp')
+        pred_blendshapes_smooth = savgol_filter(pred_blendshapes, 9, 2, axis=0, mode='interp')
+        pred_blendshapes_model2_smooth = savgol_filter(pred_blendshapes_model2, 9, 2, axis=0, mode='interp')
+        
+        diff_gt_blendshapes = np.diff(gt_blendshapes_smooth, axis=0)
+        diff_pred_blendshapes = np.diff(pred_blendshapes_smooth, axis=0)
+        diff_pred_blendshapes_model2 = np.diff(pred_blendshapes_model2_smooth, axis=0)
+        
+        significant_movenents = get_significant_movenents_mask(gt_blendshapes_smooth[:-1,:])
+        
         # Store data
         all_gt_blendshapes.append(gt_blendshapes)
+        all_diff_gt_blendshapes.append(diff_gt_blendshapes)
+        all_diff_pred_blendshapes.append(diff_pred_blendshapes)
         all_pred_blendshapes.append(pred_blendshapes)
+        all_diff_pred_blendshapes_model2.append(diff_pred_blendshapes_model2)
         all_pred_blendshapes_model2.append(pred_blendshapes_model2)
         current_frame += gt_blendshapes.shape[0]
         file_boundaries.append(current_frame)
+        all_significant_movenents.append(significant_movenents)
     
     # Remove last boundary (end of last file)
     if file_boundaries:
@@ -722,24 +881,34 @@ def main():
     concatenated_gt = np.concatenate(all_gt_blendshapes, axis=0)
     concatenated_pred = np.concatenate(all_pred_blendshapes, axis=0)
     concatenated_pred_model2 = np.concatenate(all_pred_blendshapes_model2, axis=0)
+    concatenated_diff_gt = np.concatenate(all_diff_gt_blendshapes, axis=0)
+    concatenated_diff_pred = np.concatenate(all_diff_pred_blendshapes, axis=0)
+    concatenated_diff_pred_model2 = np.concatenate(all_diff_pred_blendshapes_model2, axis=0)
+    concatenated_significant_movenents = np.concatenate(all_significant_movenents, axis=0)
     
     print(f"Concatenated GT shape: {concatenated_gt.shape}")
     print(f"Concatenated {MODEL_NAME} Pred shape: {concatenated_pred.shape}")
     print(f"Concatenated {MODEL2_NAME} Pred shape: {concatenated_pred_model2.shape}")
+    print(f"Concatenated {MODEL_NAME} Diff GT shape: {concatenated_diff_gt.shape}")
+    print(f"Concatenated {MODEL_NAME} Diff Pred shape: {concatenated_diff_pred.shape}")
+    print(f"Concatenated {MODEL2_NAME} Diff Pred shape: {concatenated_diff_pred_model2.shape}")
+    print(f"Concatenated significant movenents shape: {concatenated_significant_movenents.shape}")
     
     # Calculate correlation and distance metrics on raw values
     if CALCULATE_CORRELATION_METRICS:
         print(f"\n\nCalculating correlation and distance metrics (raw values)...")
         metrics_model1 = calculate_correlation_and_distance_metrics(
-            concatenated_gt, 
-            concatenated_pred, 
+            concatenated_diff_gt, 
+            concatenated_diff_pred, 
+            concatenated_significant_movenents,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=False,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
         )
         metrics_model2 = calculate_correlation_and_distance_metrics(
-            concatenated_gt, 
-            concatenated_pred_model2, 
+            concatenated_diff_gt, 
+            concatenated_diff_pred_model2, 
+            concatenated_significant_movenents,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=False,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
@@ -769,6 +938,7 @@ def main():
         metrics_diff_model1 = calculate_correlation_and_distance_metrics(
             concatenated_gt, 
             concatenated_pred, 
+            concatenated_significant_movenents = None,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=True,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
@@ -776,19 +946,21 @@ def main():
         metrics_diff_model2 = calculate_correlation_and_distance_metrics(
             concatenated_gt, 
             concatenated_pred_model2, 
+            concatenated_significant_movenents = None,
             blendshape_names=BLENDSHAPES_ORDERED,
             use_diff=True,
             blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
         )
         
         # Print metrics comparison
-        print_metrics_comparison(
-            metrics_diff_model1, 
-            metrics_diff_model2, 
-            MODEL_NAME, 
-            MODEL2_NAME, 
-            title_suffix=" (Frame-to-Frame Differences)"
-        )
+        if False:
+            print_metrics_comparison(
+                metrics_diff_model1, 
+                metrics_diff_model2, 
+                MODEL_NAME, 
+                MODEL2_NAME, 
+                title_suffix=" (Frame-to-Frame Differences)"
+            )
         
         # Plot metrics comparison
         plot_metrics_bar_chart(
