@@ -52,13 +52,13 @@ LOOKAHEAD_SIZES = [1]#, 50]#, 20, 30]  # List of lookahead sizes to test
 # Model configurations
 # Each entry: {'path': str, 'type': 'fairseq' or 'nemo', 'name': str, 'blendshape_indices': list, 'color': str}
 MODEL_CONFIGS = [
-    # {
-    #     'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/blendshapes/blendshapes_loud/0/checkpoints/checkpoint_last.pt',
-    #     'type': 'fairseq',
-    #     'name': 'blendshapes_loud',
-    #     'blendshape_indices': list(range(1, 52)),
-    #     'color': '#ff7f0e',  # Orange
-    # },
+    {
+        'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/blendshapes/blendshapes_loud/0/checkpoints/checkpoint_last.pt',
+        'type': 'fairseq',
+        'name': 'blendshapes_loud',
+        'blendshape_indices': list(range(1, 52)),
+        'color': '#ff7f0e',  # Orange
+    },
     # {
     #     'path': '/mnt/ML/TrainResults/ido.kazma/D2V/V2/2025_04_15/new21_baseline_blendshapes_normalized/0/checkpoints/checkpoint_last.pt',
     #     'type': 'fairseq',
@@ -87,13 +87,13 @@ MODEL_CONFIGS = [
     #     'blendshape_indices': [6, 8, 10, 14, 16, 25, 26, 27, 29, 32, 38],
     #     'color': '#8c564b',  # Brown
     # },
-    {
-        'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/NeMo/landmarks/causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side/checkpoints/causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side.nemo',
-        'type': 'nemo',
-        'name': 'causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side',
-        'blendshape_indices': [2, 3, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 23, 25, 26, 27, 29, 31, 32, 35, 37, 38, 39, 40, 41, 42, 43, 45, 47, 49, 51],
-        'color': '#e377c2',  # Pink
-    },
+    # {
+    #     'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/NeMo/landmarks/causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side/checkpoints/causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side.nemo',
+    #     'type': 'nemo',
+    #     'name': 'causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side',
+    #     'blendshape_indices': [2, 3, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 23, 25, 26, 27, 29, 31, 32, 35, 37, 38, 39, 40, 41, 42, 43, 45, 47, 49, 51],
+    #     'color': '#e377c2',  # Pink
+    # },
     # { 
     #     'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/NeMo/landmarks/causal_preprocessor_encoder_with_smile/checkpoints/causal_preprocessor_encoder_with_smile.nemo',
     #     'type': 'nemo',

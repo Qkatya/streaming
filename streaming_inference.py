@@ -59,20 +59,20 @@ LOOKAHEAD_SIZES = [1]#, 50]#, 20, 30]  # List of lookahead sizes to test
 # Model configurations
 # Each entry: {'path': str, 'type': 'fairseq' or 'nemo', 'name': str, 'blendshape_indices': list, 'color': str}
 MODEL_CONFIGS = [
-    # {
-    #     'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/blendshapes/blendshapes_loud/0/checkpoints/checkpoint_last.pt',
-    #     'type': 'fairseq',
-    #     'name': 'blendshapes_loud',
-    #     'blendshape_indices': list(range(1, 52)),
-    #     'color': '#ff7f0e',  # Orange
-    # },
     {
-        'path': '/mnt/ML/TrainResults/ido.kazma/D2V/V2/2025_04_15/new21_baseline_blendshapes_normalized/0/checkpoints/checkpoint_last.pt',
+        'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/blendshapes/blendshapes_loud/0/checkpoints/checkpoint_last.pt',
         'type': 'fairseq',
-        'name': 'new21_baseline_blendshapes_normalized',
+        'name': 'blendshapes_loud',
         'blendshape_indices': list(range(1, 52)),
-        'color': '#d62728',  # Red'
+        'color': '#ff7f0e',  # Orange
     },
+    # {
+    #     'path': '/mnt/ML/TrainResults/ido.kazma/D2V/V2/2025_04_15/new21_baseline_blendshapes_normalized/0/checkpoints/checkpoint_last.pt',
+    #     'type': 'fairseq',
+    #     'name': 'new21_baseline_blendshapes_normalized',
+    #     'blendshape_indices': list(range(1, 52)),
+    #     'color': '#d62728',  # Red'
+    # },
     # {
     #     'path': '/mnt/ML/ModelsTrainResults/katya.ivantsiv/NeMo/landmarks/causal_fastconformer_layernorm_landmarks_blendshapes_heads_only/checkpoints/causal_fastconformer_layernorm_landmarks_blendshapes_heads_only.nemo',
     #     'type': 'nemo',

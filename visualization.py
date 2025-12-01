@@ -241,7 +241,8 @@ def plot_blink_analysis(gt_concat: np.ndarray,
                        pred_diff: np.ndarray = None,
                        gt_th: float = 0.1,
                        model_th: float = 0.06,
-                       max_offset: int = 10) -> Tuple[Dict[str, go.Figure], Dict]:
+                       max_offset: int = 10,
+                       significant_gt_movenents: np.ndarray = None) -> Tuple[Dict[str, go.Figure], Dict]:
     """Generate comprehensive blink analysis plots."""
     time_gt = np.arange(len(gt_concat)) / sample_rate
     time_pred = np.arange(len(pred_concat)) / sample_rate

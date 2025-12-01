@@ -4,6 +4,11 @@ from pathlib import Path
 import pandas as pd
 from visualization import plot_blink_analysis
 from blendshape_utils import resample_to_30hz
+from scipy.signal import savgol_filter
+from scipy.stats import zscore
+
+def normalize_blinks(data):
+    return (data - np.median(data)) / (1 - np.median(data))
 
 class BlinkAnalyzer:
     def __init__(self, sample_rate: float = 30.0):
@@ -15,7 +20,8 @@ class BlinkAnalyzer:
                       pred_blends_diff_list: List[np.ndarray] = None,
                       gt_th: float = 0.1,
                       model_th: float = 0.06,
-                      max_offset: int = 10) -> Dict:
+                      max_offset: int = 10,
+                      significant_gt_movenents: np.ndarray = None) -> Dict:
         """
         Analyze blink patterns in ground truth and predicted data.
         If pred_blends_diff_list is provided, use it for differential analysis instead of computing derivatives.
@@ -23,11 +29,22 @@ class BlinkAnalyzer:
         # Extract blink signals
         self.gt_th = gt_th
         self.model_th = model_th
+        # blinks_examples = [self._extract_right_blinks(x) for x in blendshapes_list]
+        # pred_blinks_examples = [self._extract_right_blinks(x) for x in pred_blends_list]
         blinks_examples = [self._extract_blinks(x) for x in blendshapes_list]
         pred_blinks_examples = [self._extract_blinks(x) for x in pred_blends_list]
+        significant_blinks_movenents = [self._extract_right_blinks(x) for x in significant_gt_movenents]
+        # gt_diff_examples = [np.diff(savgol_filter(x, 9, 2, mode='interp')) for x in blinks_examples] #!!!!!!!!!!!!!!
         
-        gt_diff_examples = [np.diff(x) for x in blinks_examples]
-        pred_blinks_diff_examples = [np.diff(x) for x in pred_blinks_examples]
+        gt_diff_examples = [(np.diff(x)) for x in blinks_examples]
+        pred_blinks_diff_examples = [(np.diff(savgol_filter(x, 9, 2, mode='interp'))) for x in pred_blinks_examples]
+            
+        # gt_diff_examples = [np.diff(x) for x in blinks_examples]
+        # pred_blinks_diff_examples = [np.diff(x) for x in pred_blinks_examples]
+        
+        # for i in range(len(gt_diff_examples)): #!!!!!!!!!!!!!!
+        #     gt_diff_examples[i] *= significant_blinks_movenents[i]
+        #     pred_blinks_diff_examples[i] *= significant_blinks_movenents[i]
         
         resampled_data = self._align_differential(
                 blinks_examples, 
@@ -65,7 +82,8 @@ class BlinkAnalyzer:
             pred_diff=resampled_data.get('pred_diff_concat'),
             gt_th=self.gt_th,
             model_th=self.model_th,
-            max_offset=max_offset
+            max_offset=max_offset,
+            significant_gt_movenents=significant_gt_movenents
         )
         
         # Calculate metrics using differential data if available
@@ -85,6 +103,19 @@ class BlinkAnalyzer:
         """Extract blink signal from blendshape data."""
         if data.shape[1]==51:
             return (data[:,8] + data[:,9])/2  # Combine left and right blink
+        return (data[:,9] + data[:,10])/2  # Combine left and right blink
+    
+    def _extract_right_blinks(self, data: np.ndarray) -> np.ndarray:
+        """Extract blink signal from blendshape data."""
+        if data.shape[1]==51:
+            return (data[:,9])  # Combine left and right blink
+        return (data[:,10])  # Combine left and right blink
+    
+    def _extract_blinks_mask(self, data: np.ndarray) -> np.ndarray:
+        """Extract blink signal from blendshape data."""
+        if data.shape[1]==51:
+            return (data[:,8] * data[:,9])  # Combine left and right blink
+        
         return (data[:,9] + data[:,10])/2  # Combine left and right blink
     
     def _resample_and_align(self, 
@@ -205,12 +236,21 @@ class BlinkAnalyzer:
         from scipy.signal import find_peaks
         from scipy.stats import pearsonr
         
-        gt_filtered = np.convolve(data['gt_concat'], np.ones(3)/3, mode='same')
-        pred_filtered = np.convolve(data['pred_concat'], np.ones(3)/3, mode='same')
+        gt_filtered = savgol_filter(data['gt_concat'], 9, 2, mode='interp')
+        pred_filtered = savgol_filter(data['pred_concat'], 9, 2, mode='interp')
+        # gt_filtered = np.convolve(data['gt_concat'], np.ones(3)/3, mode='same')
+        # pred_filtered = np.convolve(data['pred_concat'], np.ones(3)/3, mode='same')
         
         # Find peaks
         gt_peaks, _ = find_peaks(np.diff(gt_filtered), height=self.gt_th)
         pred_peaks, _ = find_peaks(np.diff(pred_filtered), height=self.model_th)
+        
+        # gt_peaks, _ = find_peaks(np.diff(gt_filtered), height=self.gt_th)
+        # pred_peaks, _ = find_peaks(np.diff(pred_filtered), height=self.model_th)
+        
+        # # Find peaks
+        # gt_peaks, _ = find_peaks(np.diff(gt_filtered), height=self.gt_th)
+        # pred_peaks, _ = find_peaks(np.diff(pred_filtered), height=self.model_th)
         
         # Calculate correlation
         corr, _ = pearsonr(np.diff(gt_filtered), np.diff(pred_filtered))
