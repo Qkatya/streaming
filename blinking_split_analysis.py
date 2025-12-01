@@ -11,6 +11,7 @@ pio.renderers.default = "browser"
 from blink_analyzer import BlinkAnalyzer
 from scipy.stats import pearsonr
 from scipy.signal import savgol_filter
+from scipy.stats import zscore
 
 # Import lightweight data utilities (no ML dependencies - fast import!)
 from blendshapes_data_utils import load_ground_truth_blendshapes, BLENDSHAPES_ORDERED
@@ -35,7 +36,7 @@ ROW_INDICES = None
 # ROW_INDICES = list(range(0, 4))#[3663, 3953, 3642, 317, 6117, 1710, 3252, 1820, 3847]
 
 # Random sampling configuration
-NUM_RANDOM_SAMPLES = 1#   None  # Set to None to process all rows, or a number to randomly sample
+NUM_RANDOM_SAMPLES = 50# None  # Set to None to process all rows, or a number to randomly sample
 RANDOM_SEED = 42  # Set seed for reproducibility (None for different samples each run)
 THRESHOLD_FACTOR = 0.25
 # Model configuration - which prediction file to load
@@ -56,8 +57,8 @@ BLENDSHAPES_ORDERED = ['_neutral', 'browDownLeft', 'browDownRight', 'browInnerUp
                        'mouthShrugUpper', 'mouthSmileLeft', 'mouthSmileRight', 'mouthStretchLeft', 'mouthStretchRight', 'mouthUpperUpLeft', 'mouthUpperUpRight', 'noseSneerLeft', 'noseSneerRight']
 PROMINANT_MOUTH_BLENDSHAPES = ['mouthClose', 'mouthFunnel', 'mouthPucker', 'mouthDimpleLeft', 'mouthDimpleRight', 'mouthSmileRight', 'mouthFrownRight']
 PROMINANT_EYE_BLENDSHAPES = ['eyeBlinkRight', 'eyeLookInRight', 'eyeLookOutRight']
-PROMINANT_JAW_BLENDSHAPES = ['jawRight', 'jawOpen']
-CHEEKS_BLENDSHAPES = ['cheekPuff', 'cheekSquintLeft' ,'cheekSquintRight']
+PROMINANT_JAW_AND_CHEEKS_BLENDSHAPES = ['jawRight', 'jawOpen', 'cheekPuff']
+# CHEEKS_BLENDSHAPES = ['cheekPuff', 'cheekSquintLeft' ,'cheekSquintRight']
 BROW_BLENDSHAPES = ['browDownLeft', 'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight']
 
 # Blendshapes to plot
@@ -66,24 +67,33 @@ BLENDSHAPES_TO_PLOT = BLENDSHAPES_ORDERED
 
 # Analysis flags - control which metrics to calculate
 CALCULATE_BLINK_METRICS = True  # ROC curve analysis for blink detection
-CALCULATE_CORRELATION_METRICS = False  # PCC, L1, L2 on raw predictions
-CALCULATE_DIFF_METRICS = False#True  # PCC, L1, L2 on frame-to-frame differences
+CALCULATE_CORRELATION_METRICS = False #True  # PCC, L1, L2 on raw predictions
+CALCULATE_DIFF_METRICS = False #True  # PCC, L1, L2 on frame-to-frame differences
+
+# Plotting mode flags
+PLOT_BY_CATEGORIES = True#False  # If True, plot by predefined categories; If False, plot all blendshapes above threshold
+VELOCITY_AGREEMENT_THRESHOLD = 80.0  # Minimum velocity agreement % to include in the plot (when PLOT_BY_CATEGORIES=False)
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
-def get_blendshapes_category_name():
-    """Get a human-readable name for the current BLENDSHAPES_TO_PLOT category."""
-    if BLENDSHAPES_TO_PLOT == PROMINANT_MOUTH_BLENDSHAPES:
+def get_blendshapes_category_name(blendshapes_list=None):
+    """Get a human-readable name for the given blendshapes category.
+    
+    Args:
+        blendshapes_list: List of blendshapes to get name for. If None, uses BLENDSHAPES_TO_PLOT.
+    """
+    if blendshapes_list is None:
+        blendshapes_list = BLENDSHAPES_TO_PLOT
+    
+    if blendshapes_list == PROMINANT_MOUTH_BLENDSHAPES:
         return "Prominent Mouth Blendshapes"
-    elif BLENDSHAPES_TO_PLOT == PROMINANT_EYE_BLENDSHAPES:
+    elif blendshapes_list == PROMINANT_EYE_BLENDSHAPES:
         return "Prominent Eye Blendshapes"
-    elif BLENDSHAPES_TO_PLOT == PROMINANT_JAW_BLENDSHAPES:
-        return "Prominent Jaw Blendshapes"
-    elif BLENDSHAPES_TO_PLOT == CHEEKS_BLENDSHAPES:
-        return "Cheeks Blendshapes"
-    elif BLENDSHAPES_TO_PLOT == BROW_BLENDSHAPES:
+    elif blendshapes_list == PROMINANT_JAW_AND_CHEEKS_BLENDSHAPES:
+        return "Prominent Jaw and Cheeks Blendshapes"
+    elif blendshapes_list == BROW_BLENDSHAPES:
         return "Brow Blendshapes"
     else:
         return "Custom Blendshapes"
@@ -204,11 +214,11 @@ def plot_one_bs(gt, pred, ):
     )
 
     # Update layout
-    category_name = get_blendshapes_category_name()
+    # category_name = get_blendshapes_category_name()
     fig.update_layout(
-        title_text=f"Blendshapes Comparison: GT vs Prediction (Right Side Only)<br>"
-                   f"<sub>{category_name}</sub><br>"
-                   f"<sub>{MODEL_NAME}_H{HISTORY_SIZE}_LA{LOOKAHEAD_SIZE}</sub><br>",
+        # title_text=f"Blendshapes Comparison: GT vs Prediction (Right Side Only)<br>"
+        #            f"<sub>{category_name}</sub><br>"
+        #            f"<sub>{MODEL_NAME}_H{HISTORY_SIZE}_LA{LOOKAHEAD_SIZE}</sub><br>",
         title_x=0.5,
         title_xanchor='center',
         title_font_size=20,
@@ -317,19 +327,21 @@ def calculate_metrics(matched_gt, matched_pred, unmatched_gt, unmatched_pred, pr
     
     TPR = (TP / P)*100
     FNR = (100 - TPR)
-    FPR = (FP / N)*100
+    FPR = (FP/(pred_concat.shape[0]/25))*60#(FP / N)*100
             
     return TPR, FNR, FPR
 
-def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, gt_th):
+def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents):
     TPR_lst = []
     FNR_lst = []
     FPR_lst = []
-    for model_th in th_list:
+    for model_th in tqdm(th_list):
         analyzer = BlinkAnalyzer()
-        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th,model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer)
-        # _, fig = list(blink_analysis_model['plots'].items())[1] 
-        # fig.show()
+        gt_th = 0.1
+        model_th = 0.02
+        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th,model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer, significant_gt_movenents=significant_gt_movenents)
+        _, fig = list(blink_analysis_model['plots'].items())[1] 
+        fig.show()
         matched_gt = len(blink_analysis_model['matches']['matched_gt'])
         matched_pred = len(blink_analysis_model['matches']['matched_pred'])
         unmatched_gt = len(blink_analysis_model['matches']['unmatched_gt'])
@@ -846,6 +858,587 @@ def plot_velocity_agreement_only(metrics1, model1_name):
     
     return fig
 
+def plot_all_categories_metrics(all_category_metrics, model1_name, model2_name, title_suffix=""):
+    """Create subplots comparing metrics across all blendshape categories.
+    
+    Args:
+        all_category_metrics: List of tuples (category_name, metrics1, metrics2)
+        model1_name: Name of model 1
+        model2_name: Name of model 2
+        title_suffix: Optional suffix for the plot title
+    """
+    num_categories = len(all_category_metrics)
+    if num_categories == 0:
+        print("No category metrics available for plotting")
+        return
+    
+    # Create a color palette for blendshapes
+    base_colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+    
+    # Check if we have direction agreement metrics (for diff mode)
+    has_direction_agreement = 'per_blendshape_direction_agreement' in all_category_metrics[0][1]
+    
+    # Create subplots - 2 rows, each category gets one column
+    # Row 1: PCC, L1, L2, Normalized RMSE
+    # Row 2: Velocity Agreement, Velocity Correlation, Direction Agreement (if diff mode)
+    num_cols_row1 = 4
+    num_cols_row2 = 3 if has_direction_agreement else 2
+    
+    subplot_titles = []
+    for category_name, _, _ in all_category_metrics:
+        subplot_titles.append(f'{category_name}')
+    
+    # Create figure with subplots - one row per category
+    num_metrics = 7 if has_direction_agreement else 6
+    fig = make_subplots(
+        rows=num_categories, 
+        cols=num_metrics,
+        subplot_titles=None,  # We'll add custom titles
+        vertical_spacing=0.08,
+        horizontal_spacing=0.05,
+        specs=[[{'type': 'bar'} for _ in range(num_metrics)] for _ in range(num_categories)]
+    )
+    
+    # Prepare data for plotting - use display names for plots
+    models = [MODEL_NAME_TO_PLOT, MODEL2_NAME_TO_PLOT]
+    
+    metric_titles = ['PCC', 'L1', 'L2', 'Norm RMSE', 'Vel Agree %', 'Vel Corr']
+    if has_direction_agreement:
+        metric_titles.append('Dir Agree %')
+    
+    # Plot each category
+    for cat_idx, (category_name, metrics1, metrics2) in enumerate(all_category_metrics):
+        row = cat_idx + 1
+        blendshape_names = metrics1.get('analyzed_blendshapes')
+        num_blendshapes = len(blendshape_names)
+        
+        # Extend colors if needed
+        colors = base_colors.copy()
+        while len(colors) < num_blendshapes:
+            colors.extend(base_colors)
+        colors = colors[:num_blendshapes]
+        
+        # Plot PCC (col 1)
+        for i, bs_name in enumerate(blendshape_names):
+            pcc_values = [metrics1['per_blendshape_pcc'][i], metrics2['per_blendshape_pcc'][i]]
+            fig.add_trace(
+                go.Bar(
+                    x=models,
+                    y=pcc_values,
+                    name=bs_name,
+                    marker_color=colors[i],
+                    showlegend=(cat_idx == 0),
+                    legendgroup=bs_name,
+                    text=[f'{v:.2f}' for v in pcc_values],
+                    textposition='outside',
+                    textfont=dict(size=8)
+                ),
+                row=row, col=1
+            )
+        
+        # Plot L1 (col 2)
+        for i, bs_name in enumerate(blendshape_names):
+            l1_values = [metrics1['per_blendshape_l1'][i], metrics2['per_blendshape_l1'][i]]
+            fig.add_trace(
+                go.Bar(
+                    x=models,
+                    y=l1_values,
+                    name=bs_name,
+                    marker_color=colors[i],
+                    showlegend=False,
+                    legendgroup=bs_name,
+                    text=[f'{v:.2f}' for v in l1_values],
+                    textposition='outside',
+                    textfont=dict(size=8)
+                ),
+                row=row, col=2
+            )
+        
+        # Plot L2 (col 3)
+        for i, bs_name in enumerate(blendshape_names):
+            l2_values = [metrics1['per_blendshape_l2'][i], metrics2['per_blendshape_l2'][i]]
+            fig.add_trace(
+                go.Bar(
+                    x=models,
+                    y=l2_values,
+                    name=bs_name,
+                    marker_color=colors[i],
+                    showlegend=False,
+                    legendgroup=bs_name,
+                    text=[f'{v:.2f}' for v in l2_values],
+                    textposition='outside',
+                    textfont=dict(size=8)
+                ),
+                row=row, col=3
+            )
+        
+        # Plot Normalized RMSE (col 4)
+        for i, bs_name in enumerate(blendshape_names):
+            norm_rmse_values = [metrics1['per_blendshape_normalized_rmse'][i], metrics2['per_blendshape_normalized_rmse'][i]]
+            fig.add_trace(
+                go.Bar(
+                    x=models,
+                    y=norm_rmse_values,
+                    name=bs_name,
+                    marker_color=colors[i],
+                    showlegend=False,
+                    legendgroup=bs_name,
+                    text=[f'{v:.2f}' for v in norm_rmse_values],
+                    textposition='outside',
+                    textfont=dict(size=8)
+                ),
+                row=row, col=4
+            )
+        
+        # Plot Velocity Agreement (col 5)
+        for i, bs_name in enumerate(blendshape_names):
+            vel_agree_values = [
+                metrics1['per_blendshape_velocity_agreement'][i], 
+                metrics2['per_blendshape_velocity_agreement'][i]
+            ]
+            fig.add_trace(
+                go.Bar(
+                    x=models,
+                    y=vel_agree_values,
+                    name=bs_name,
+                    marker_color=colors[i],
+                    showlegend=False,
+                    legendgroup=bs_name,
+                    text=[f'{v:.1f}' for v in vel_agree_values],
+                    textposition='outside',
+                    textfont=dict(size=8)
+                ),
+                row=row, col=5
+            )
+        
+        # Plot Velocity Correlation (col 6)
+        for i, bs_name in enumerate(blendshape_names):
+            vel_corr_values = [
+                metrics1['per_blendshape_velocity_correlation'][i], 
+                metrics2['per_blendshape_velocity_correlation'][i]
+            ]
+            fig.add_trace(
+                go.Bar(
+                    x=models,
+                    y=vel_corr_values,
+                    name=bs_name,
+                    marker_color=colors[i],
+                    showlegend=False,
+                    legendgroup=bs_name,
+                    text=[f'{v:.2f}' for v in vel_corr_values],
+                    textposition='outside',
+                    textfont=dict(size=8)
+                ),
+                row=row, col=6
+            )
+        
+        # Plot Direction Agreement (col 7, if available)
+        if has_direction_agreement:
+            for i, bs_name in enumerate(blendshape_names):
+                dir_agree_values = [
+                    metrics1['per_blendshape_direction_agreement'][i], 
+                    metrics2['per_blendshape_direction_agreement'][i]
+                ]
+                fig.add_trace(
+                    go.Bar(
+                        x=models,
+                        y=dir_agree_values,
+                        name=bs_name,
+                        marker_color=colors[i],
+                        showlegend=False,
+                        legendgroup=bs_name,
+                        text=[f'{v:.1f}' for v in dir_agree_values],
+                        textposition='outside',
+                        textfont=dict(size=8)
+                    ),
+                    row=row, col=7
+                )
+        
+        # Add category name as y-axis title for the first column
+        fig.update_yaxes(title_text=category_name, row=row, col=1, title_font=dict(size=10))
+    
+    # Update layout
+    fig.update_layout(
+        title_text=f"Per-Blendshape Metrics Across Categories{title_suffix}<br><sub>threshold factor: {THRESHOLD_FACTOR}, #samples: {NUM_RANDOM_SAMPLES}</sub>",
+        title_x=0.5,
+        title_xanchor='center',
+        title_font_size=18,
+        height=300 * num_categories,
+        width=2800,
+        barmode='group',
+        legend=dict(
+            title="Blendshapes",
+            font=dict(size=10),
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.01
+        )
+    )
+    
+    # Add column titles at the top
+    for col_idx, metric_title in enumerate(metric_titles):
+        fig.add_annotation(
+            text=f"<b>{metric_title}</b>",
+            xref="x domain" if col_idx == 0 else f"x{col_idx+1} domain",
+            yref="paper",
+            x=0.5,
+            y=1.02,
+            showarrow=False,
+            font=dict(size=14),
+            xanchor='center'
+        )
+    
+    # Update x-axes
+    for row in range(1, num_categories + 1):
+        for col in range(1, num_metrics + 1):
+            fig.update_xaxes(tickangle=45, row=row, col=col, tickfont=dict(size=8))
+    
+    fig.show()
+    
+    return fig
+
+def plot_velocity_agreement_all_categories(all_category_metrics, model1_name, title_suffix=""):
+    """Create subplots showing only velocity agreement for model 1 across all categories.
+    Each blendshape has its own color that is consistent across all categories.
+    
+    Args:
+        all_category_metrics: List of tuples (category_name, metrics1, metrics2)
+        model1_name: Name of model 1
+        title_suffix: Optional suffix for the plot title
+    """
+    num_categories = len(all_category_metrics)
+    if num_categories == 0:
+        print("No category metrics available for plotting")
+        return
+    
+    def clean_blendshape_name(name):
+        """Remove 'Right' and 'Left' from blendshape names for display."""
+        return name.replace('Right', '').replace('Left', '')
+    
+    # Create a color palette - collect all unique CLEANED blendshape names first
+    # This ensures same color for Left/Right versions
+    all_cleaned_blendshapes = set()
+    for category_name, metrics1, _ in all_category_metrics:
+        blendshape_names = metrics1.get('analyzed_blendshapes')
+        if blendshape_names:
+            for bs_name in blendshape_names:
+                # Skip Left if Right exists
+                if 'Left' in bs_name:
+                    right_version = bs_name.replace('Left', 'Right')
+                    if right_version in blendshape_names:
+                        continue
+                cleaned_name = clean_blendshape_name(bs_name)
+                all_cleaned_blendshapes.add(cleaned_name)
+    
+    # Sort blendshapes for consistent ordering
+    all_cleaned_blendshapes = sorted(list(all_cleaned_blendshapes))
+    
+    # Create color mapping for each unique blendshape - using vibrant color palette
+    nice_colors = [
+        '#E63946',  # Red (vibrant crimson)
+        '#F77F00',  # Orange
+        '#FCBF49',  # Yellow
+        '#06D6A0',  # Teal (mint/turquoise)
+        '#118AB2',  # Blue (ocean blue)
+        '#073B4C',  # Dark Blue (navy)
+        '#8338EC',  # Purple (bright violet)
+        '#FF006E',  # Pink/Magenta
+        '#FB5607',  # Bright Orange
+        '#FFBE0B',  # Golden Yellow
+        '#3A86FF',  # Bright Blue (cornflower)
+        '#8AC926',  # Lime Green
+        '#06FFA5',  # Mint (bright cyan)
+        '#4361EE',  # Royal Blue
+        '#F72585',  # Hot Pink
+        '#7209B7',  # Deep Purple
+        '#560BAD',  # Dark Purple (indigo)
+        '#B5179E',  # Violet
+        '#F72585',  # Rose
+        # Additional colors if needed
+        '#D90429',  # Crimson Red
+        '#EF476F',  # Watermelon
+        '#FFD60A',  # Bright Yellow
+        '#06FFA5',  # Aqua
+        '#4CC9F0',  # Sky Blue
+        '#4361EE',  # Ultramarine
+        '#7209B7',  # Purple
+        '#F72585',  # Persian Rose
+    ]
+    
+    # Extend colors if needed
+    while len(nice_colors) < len(all_cleaned_blendshapes):
+        nice_colors.extend(nice_colors)
+    
+    # Create blendshape to color mapping based on CLEANED names
+    blendshape_color_map = {bs: nice_colors[i] for i, bs in enumerate(all_cleaned_blendshapes)}
+    
+    # Create subplots - one subplot per category
+    fig = make_subplots(
+        rows=1, 
+        cols=num_categories,
+        subplot_titles=[cat_name for cat_name, _, _ in all_category_metrics],
+        horizontal_spacing=0.08
+    )
+    
+    # First pass: collect all velocity agreement values to determine y-axis range
+    all_vel_values = []
+    for category_name, metrics1, _ in all_category_metrics:
+        blendshape_names = metrics1.get('analyzed_blendshapes')
+        if blendshape_names is None:
+            continue
+        
+        for i, bs_name in enumerate(blendshape_names):
+            # Skip if this is a Left blendshape and a Right version exists
+            if 'Left' in bs_name:
+                right_version = bs_name.replace('Left', 'Right')
+                if right_version in blendshape_names:
+                    continue
+            
+            vel_agree_value = metrics1['per_blendshape_velocity_agreement'][i]
+            all_vel_values.append(vel_agree_value)
+    
+    # Determine y-axis range
+    if all_vel_values:
+        y_min = 0  # Start from 0 for percentage
+        y_max = max(all_vel_values) * 1.15  # Add 15% padding for text labels
+    else:
+        y_min, y_max = 0, 100
+    
+    # Plot each category
+    for cat_idx, (category_name, metrics1, _) in enumerate(all_category_metrics):
+        col = cat_idx + 1
+        blendshape_names = metrics1.get('analyzed_blendshapes')
+        
+        if blendshape_names is None:
+            continue
+        
+        # Filter to only plot Right blendshapes (or blendshapes without Left/Right)
+        # Skip Left blendshapes to avoid duplicates
+        for i, bs_name in enumerate(blendshape_names):
+            # Skip if this is a Left blendshape and a Right version exists
+            if 'Left' in bs_name:
+                right_version = bs_name.replace('Left', 'Right')
+                if right_version in blendshape_names:
+                    continue  # Skip Left, we'll plot the Right version instead
+            
+            vel_agree_value = metrics1['per_blendshape_velocity_agreement'][i]
+            display_name = clean_blendshape_name(bs_name)
+            
+            fig.add_trace(
+                go.Bar(
+                    x=[display_name],
+                    y=[vel_agree_value],
+                    name=display_name,
+                    marker_color=blendshape_color_map[display_name],  # Use cleaned name for color lookup
+                    showlegend=(cat_idx == 0),  # Only show legend for first category
+                    legendgroup=display_name,  # Group by cleaned name
+                    text=[f'{vel_agree_value:.1f}%'],
+                    textposition='outside',
+                    textfont=dict(size=10)
+                ),
+                row=1, col=col
+            )
+        
+        # Update y-axis for this subplot with shared range
+        fig.update_yaxes(
+            title_text="Velocity Agreement (%)", 
+            row=1, col=col,
+            range=[y_min, y_max]
+        )
+        fig.update_xaxes(tickangle=45, row=1, col=col)
+    
+    # Update layout
+    fig.update_layout(
+        title_text=f"Velocity Agreement (%) ",#- {model1_name} Across Categories{title_suffix}<br><sub>threshold factor: {THRESHOLD_FACTOR}, #samples: {NUM_RANDOM_SAMPLES}</sub>",
+        # title_text=f"Velocity Agreement (%) - {model1_name} Across Categories{title_suffix}<br><sub>threshold factor: {THRESHOLD_FACTOR}, #samples: {NUM_RANDOM_SAMPLES}</sub>",
+        title_x=0.5,
+        title_xanchor='center',
+        title_font_size=18,
+        height=600,
+        width=400 * num_categories,
+        showlegend=True,
+        legend=dict(
+            title="Blendshapes",
+            font=dict(size=10),
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.01
+        )
+    )
+    
+    fig.show()
+    
+    return fig
+
+def plot_velocity_agreement_above_threshold(metrics1, model1_name, threshold=80.0, title_suffix=""):
+    """Plot all blendshapes with velocity agreement above the threshold.
+    Only uses Right blendshapes and displays names without 'Right' suffix.
+    
+    Args:
+        metrics1: Metrics dictionary for model 1
+        model1_name: Name of model 1
+        threshold: Minimum velocity agreement percentage to include
+        title_suffix: Optional suffix for the plot title
+    """
+    blendshape_names = metrics1.get('analyzed_blendshapes')
+    if blendshape_names is None:
+        print("No blendshape names available for plotting")
+        return
+    
+    def clean_blendshape_name(name):
+        """Remove 'Right' and 'Left' from blendshape names for display."""
+        return name.replace('Right', '').replace('Left', '')
+    
+    # Filter blendshapes: only Right versions (or no side), and above threshold
+    filtered_blendshapes = []
+    for i, bs_name in enumerate(blendshape_names):
+        # Skip if this is a Left blendshape and a Right version exists
+        if 'Left' in bs_name:
+            right_version = bs_name.replace('Left', 'Right')
+            if right_version in blendshape_names:
+                continue  # Skip Left, we'll use the Right version instead
+        
+        vel_agree_value = metrics1['per_blendshape_velocity_agreement'][i]
+        
+        # Only include if above threshold
+        if vel_agree_value >= threshold:
+            display_name = clean_blendshape_name(bs_name)
+            filtered_blendshapes.append((display_name, vel_agree_value, bs_name))
+    
+    if not filtered_blendshapes:
+        print(f"No blendshapes found with velocity agreement >= {threshold}%")
+        return
+    
+    # Define custom order for blendshapes
+    custom_order = [
+        'mouthSmile',
+        'mouthFrown', 
+        'mouthDimple',
+        'mouthPucker',
+        'mouthFunnel',
+        'mouthClose',
+        'jawOpen',
+        'jaw',  # This will match jawRight (will be displayed as "jaw Side")
+        'cheekPuff'
+    ]
+    
+    def get_sort_key(item):
+        """Return sort key based on custom order."""
+        display_name, vel_agree_value, original_name = item
+        
+        # Special handling for jaw - add "Side" to the display name
+        if 'jaw' in original_name.lower() and 'open' not in original_name.lower():
+            # This is jawRight or jawLeft
+            return (custom_order.index('jaw'), display_name)
+        
+        # Find the base name in custom order
+        for idx, order_name in enumerate(custom_order):
+            if order_name.lower() in display_name.lower():
+                return (idx, display_name)
+        
+        # If not in custom order, put at the end
+        return (len(custom_order), display_name)
+    
+    # Sort by custom order
+    filtered_blendshapes.sort(key=get_sort_key)
+    
+    # Update display names for jaw (add "Side")
+    filtered_blendshapes = [
+        (display_name + ' Side' if 'jaw' in original_name.lower() and 'open' not in original_name.lower() else display_name,
+         vel_agree_value, 
+         original_name)
+        for display_name, vel_agree_value, original_name in filtered_blendshapes
+    ]
+    
+    # Create color palette - same vibrant palette as category plots
+    nice_colors = [
+        '#E63946',  # Red (vibrant crimson)
+        '#F77F00',  # Orange
+        '#FCBF49',  # Yellow
+        '#06D6A0',  # Teal (mint/turquoise)
+        '#118AB2',  # Blue (ocean blue)
+        '#073B4C',  # Dark Blue (navy)
+        '#8338EC',  # Purple (bright violet)
+        '#FF006E',  # Pink/Magenta
+        '#FB5607',  # Bright Orange
+        '#FFBE0B',  # Golden Yellow
+        '#3A86FF',  # Bright Blue (cornflower)
+        '#8AC926',  # Lime Green
+        '#06FFA5',  # Mint (bright cyan)
+        '#4361EE',  # Royal Blue
+        '#F72585',  # Hot Pink
+        '#7209B7',  # Deep Purple
+        '#560BAD',  # Dark Purple (indigo)
+        '#B5179E',  # Violet
+        '#F72585',  # Rose
+        # Additional colors if needed
+        '#D90429',  # Crimson Red
+        '#EF476F',  # Watermelon
+        '#FFD60A',  # Bright Yellow
+        '#06FFA5',  # Aqua
+        '#4CC9F0',  # Sky Blue
+        '#4361EE',  # Ultramarine
+        '#7209B7',  # Purple
+        '#F72585',  # Persian Rose
+    ]
+    
+    # Extend colors if needed
+    while len(nice_colors) < len(filtered_blendshapes):
+        nice_colors.extend(nice_colors)
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Plot each blendshape
+    for i, (display_name, vel_agree_value, original_name) in enumerate(filtered_blendshapes):
+        fig.add_trace(
+            go.Bar(
+                x=[display_name],
+                y=[vel_agree_value],
+                name=display_name,
+                marker_color=nice_colors[i],
+                showlegend=True,
+                text=[f'{vel_agree_value:.1f}%'],
+                textposition='outside',
+                textfont=dict(size=10)
+            )
+        )
+    
+    # Update layout
+    fig.update_layout(
+        title_text=f"Velocity Agreement (%)",# - Blendshapes Above {threshold}%",
+        title_x=0.5,
+        title_xanchor='center',
+        title_font_size=18,
+        height=600,
+        width=max(800, len(filtered_blendshapes) * 60),  # Dynamic width based on number of bars
+        yaxis_title="Velocity Agreement (%)",
+        xaxis_title="Blendshapes",
+        xaxis_tickangle=45,
+        showlegend=True,
+        legend=dict(
+            title="Blendshapes",
+            font=dict(size=10),
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.01
+        )
+    )
+    
+    # Set y-axis range
+    y_max = max([v for _, v, _ in filtered_blendshapes]) * 1.15
+    fig.update_yaxes(range=[0, y_max])
+    
+    fig.show()
+    
+    return fig
+
 def get_significant_movenents_mask(blendshapes, threshold_factor=0.5):
     significant_movenents_mask = np.zeros(blendshapes.shape, dtype=bool)
     for i in range(blendshapes.shape[1]):
@@ -853,6 +1446,8 @@ def get_significant_movenents_mask(blendshapes, threshold_factor=0.5):
         significant_movenents_mask[:, i] = significant_movenents_mask[:, i] | (np.abs(blendshapes[:, i]) > th)
     return significant_movenents_mask
 
+def normalize_blinks(data):
+    return (data - np.median(data)) / (1 - np.median(data))
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -948,6 +1543,10 @@ def main():
         
         gt_blendshapes_smooth = savgol_filter(gt_blendshapes, 9, 2, axis=0, mode='interp')
         pred_blendshapes_smooth = savgol_filter(pred_blendshapes, 9, 2, axis=0, mode='interp')
+        # plot_one_bs(gt_blendshapes_smooth[:,10], pred_blendshapes_smooth[:,10])
+        # plot_one_bs(zscore(gt_blendshapes_smooth[:,10]), zscore(pred_blendshapes_smooth[:,10]))
+        # plot_one_bs(gt_blendshapes_smooth[:,10], pred_blendshapes_smooth[:,10])
+        # plot_one_bs(normalize_blinks(gt_blendshapes_smooth[:,10]), normalize_blinks(pred_blendshapes_smooth[:,10]))
         pred_blendshapes_model2_smooth = savgol_filter(pred_blendshapes_model2, 9, 2, axis=0, mode='interp')
         
         diff_gt_blendshapes = np.diff(gt_blendshapes_smooth, axis=0)
@@ -1000,48 +1599,105 @@ def main():
     # Calculate correlation and distance metrics on raw values
     if CALCULATE_CORRELATION_METRICS:
         print(f"\n\nCalculating correlation and distance metrics (raw values)...")
-        metrics_model1 = calculate_correlation_and_distance_metrics(
-            concatenated_diff_gt, 
-            concatenated_diff_pred, 
-            concatenated_significant_gt_movenents,
-            concatenated_significant_pred_movenents,
-            blendshape_names=BLENDSHAPES_ORDERED,
-            use_diff=False,
-            blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
-        )
-        metrics_model2 = calculate_correlation_and_distance_metrics(
-            concatenated_diff_gt, 
-            concatenated_diff_pred_model2, 
-            concatenated_significant_gt_movenents,
-            concatenated_significant_pred_model2_movenents,
-            blendshape_names=BLENDSHAPES_ORDERED,
-            use_diff=False,
-            blendshapes_to_analyze=BLENDSHAPES_TO_PLOT
-        )
         
-        # Print metrics comparison
-        print_metrics_comparison(
-            metrics_model1, 
-            metrics_model2, 
-            MODEL_NAME, 
-            MODEL2_NAME, 
-            title_suffix=" (Raw Values)"
-        )
-        
-        # Plot metrics comparison
-        plot_metrics_bar_chart(
-            metrics_model1,
-            metrics_model2,
-            MODEL_NAME,
-            MODEL2_NAME,
-            title_suffix=" (Raw Values)"
-        )
-        
-        # Plot velocity agreement only
-        plot_velocity_agreement_only(
-            metrics_model1,
-            MODEL_NAME
-        )
+        if PLOT_BY_CATEGORIES:
+            # Mode 1: Plot by predefined categories
+            # Define all blendshape categories to iterate over
+            blendshape_categories = [
+                ('PROMINANT_MOUTH_BLENDSHAPES', PROMINANT_MOUTH_BLENDSHAPES),
+                ('PROMINANT_EYE_BLENDSHAPES', PROMINANT_EYE_BLENDSHAPES),
+                ('PROMINANT_JAW_AND_CHEEKS_BLENDSHAPES', PROMINANT_JAW_AND_CHEEKS_BLENDSHAPES),
+                ('BROW_BLENDSHAPES', BROW_BLENDSHAPES)
+            ]
+            
+            # Store metrics for all categories
+            all_category_metrics = []
+            
+            # Iterate over each blendshape category
+            for category_var_name, category_blendshapes in blendshape_categories:
+                category_name = get_blendshapes_category_name(category_blendshapes)
+                print(f"\n{'='*80}")
+                print(f"Processing category: {category_name}")
+                print(f"{'='*80}")
+                
+                # Calculate metrics for model 1
+                metrics_model1 = calculate_correlation_and_distance_metrics(
+                    concatenated_diff_gt, 
+                    concatenated_diff_pred, 
+                    concatenated_significant_gt_movenents,
+                    concatenated_significant_pred_movenents,
+                    blendshape_names=BLENDSHAPES_ORDERED,
+                    use_diff=False,
+                    blendshapes_to_analyze=category_blendshapes
+                )
+                
+                # Calculate metrics for model 2
+                metrics_model2 = calculate_correlation_and_distance_metrics(
+                    concatenated_diff_gt, 
+                    concatenated_diff_pred_model2, 
+                    concatenated_significant_gt_movenents,
+                    concatenated_significant_pred_model2_movenents,
+                    blendshape_names=BLENDSHAPES_ORDERED,
+                    use_diff=False,
+                    blendshapes_to_analyze=category_blendshapes
+                )
+                
+                # Store metrics for later plotting
+                all_category_metrics.append((category_name, metrics_model1, metrics_model2))
+                
+                # Print metrics comparison for this category
+                print_metrics_comparison(
+                    metrics_model1, 
+                    metrics_model2, 
+                    MODEL_NAME, 
+                    MODEL2_NAME, 
+                    title_suffix=f" (Raw Values) - {category_name}"
+                )
+            
+            # Plot all categories in one figure with subplots
+            print(f"\n{'='*80}")
+            print("Plotting all categories in subplots...")
+            print(f"{'='*80}")
+            # plot_all_categories_metrics(
+            #     all_category_metrics,
+            #     MODEL_NAME_TO_PLOT,
+            #     MODEL2_NAME_TO_PLOT,
+            #     title_suffix=" (Raw Values)"
+            # )
+            
+            # Plot only velocity agreement for model 1 across all categories
+            plot_velocity_agreement_all_categories(
+                all_category_metrics,
+                MODEL_NAME_TO_PLOT,
+                title_suffix=" (Raw Values)"
+            )
+        else:
+            # Mode 2: Plot all blendshapes above threshold
+            print(f"\n{'='*80}")
+            print(f"Processing all blendshapes (BLENDSHAPES_ORDERED)")
+            print(f"{'='*80}")
+            
+            # Calculate metrics for all blendshapes
+            metrics_model1 = calculate_correlation_and_distance_metrics(
+                concatenated_diff_gt, 
+                concatenated_diff_pred, 
+                concatenated_significant_gt_movenents,
+                concatenated_significant_pred_movenents,
+                blendshape_names=BLENDSHAPES_ORDERED,
+                use_diff=False,
+                blendshapes_to_analyze=BLENDSHAPES_ORDERED
+            )
+            
+            # Plot blendshapes above threshold
+            print(f"\n{'='*80}")
+            print(f"Plotting blendshapes with velocity agreement >= {VELOCITY_AGREEMENT_THRESHOLD}%...")
+            print(f"{'='*80}")
+            plot_velocity_agreement_above_threshold(
+                metrics_model1,
+                MODEL_NAME_TO_PLOT,
+                threshold=VELOCITY_AGREEMENT_THRESHOLD,
+                title_suffix=" (Raw Values)"
+            )
     
     # Calculate correlation and distance metrics on frame-to-frame differences
     if CALCULATE_DIFF_METRICS:
@@ -1183,39 +1839,40 @@ def main():
         
         gt_th = 0.06
         quantizer = 8
-        dense_region = np.linspace(0, 0.1, 300, endpoint=True)
-        sparse_region1 = np.linspace(-10, -1, 300, endpoint=True)
-        sparse_region2 = np.linspace(-1, 0, 500, endpoint=False)
-        sparse_region3 = np.linspace(0.1, 3, 400, endpoint=True)
+        dense_region = np.linspace(0, 0.07, 100, endpoint=True)
+        sparse_region1 = np.linspace(-10, -1, 2, endpoint=True)
+        sparse_region2 = np.linspace(-1, 0, 2, endpoint=False)
+        sparse_region3 = np.linspace(0.1, 3, 2, endpoint=True)
 
-        th_list = np.unique(np.concatenate([sparse_region1, sparse_region2, dense_region, sparse_region3]))
+        th_list = np.unique(np.concatenate([sparse_region1, sparse_region2, dense_region, sparse_region3])) #!!!!!!!!!!!!!!
         # th_list = np.array([0.02, 0.05, 0.1])
         
         print(f"Running blink analysis for {MODEL_NAME}...")
-        TPR_lst, FNR_lst, FPR_lst = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes, quantizer, gt_th)
+        TPR_lst, FNR_lst, FPR_lst = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes, quantizer, gt_th, all_significant_gt_movenents)
         
-        print(f"Running blink analysis for {MODEL2_NAME}...")
-        TPR_lst2, FNR_lst2, FPR_lst2 = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes_model2, quantizer, gt_th)
+        # print(f"Running blink analysis for {MODEL2_NAME}...")
+        # TPR_lst2, FNR_lst2, FPR_lst2 = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes_model2, quantizer, gt_th)
 
         # Create ROC curve using plotly
         import plotly.graph_objects as go
         fig_roc = go.Figure()
         fig_roc.add_trace(go.Scatter(x=FPR_lst, y=TPR_lst, mode='lines+markers', name=MODEL_NAME, line=dict(color='blue', width=3), marker=dict(size=8)))
-        fig_roc.add_trace(go.Scatter(x=FPR_lst2, y=TPR_lst2, mode='lines+markers', name=MODEL2_NAME, line=dict(color='red', width=3), marker=dict(size=8)))
+        # fig_roc.add_trace(go.Scatter(x=FPR_lst2, y=TPR_lst2, mode='lines+markers', name=MODEL2_NAME, line=dict(color='red', width=3), marker=dict(size=8)))
         fig_roc.add_trace(go.Scatter(x=[0, 100], y=[0, 100], mode='lines', name='Random Classifier', line=dict(color='gray', width=2, dash='dash')))
         
         # Determine x-axis range based on actual data (with some padding)
-        max_fpr = max(max(FPR_lst), max(FPR_lst2))
-        min_fpr = min(min(FPR_lst), min(FPR_lst2))
-        fpr_range = max_fpr - min_fpr
-        x_range_max = min(100, max_fpr + 0.1 * fpr_range) if fpr_range > 0 else 100
-        x_range_min = max(0, min_fpr - 0.1 * fpr_range) if fpr_range > 0 else 0
+        # max_fpr = max(max(FPR_lst), max(FPR_lst2))
+        # min_fpr = min(min(FPR_lst), min(FPR_lst2))
+        # fpr_range = max_fpr - min_fpr
+        # x_range_max = min(100, max_fpr + 0.1 * fpr_range) if fpr_range > 0 else 100
+        # x_range_min = max(0, min_fpr - 0.1 * fpr_range) if fpr_range > 0 else 0
         
         fig_roc.update_layout(
             title=dict(text=f'ROC Curve - Blink Detection', font=dict(size=30)), 
-            xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=20)), 
+            xaxis_title=dict(text='# False blinks in minute', font=dict(size=20)), 
+            # xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=20)), 
             yaxis_title=dict(text='True Positive Rate (%)', font=dict(size=20)), 
-            xaxis=dict(range=[x_range_min, x_range_max], tickfont=dict(size=16)), 
+            # xaxis=dict(range=[x_range_min, x_range_max], tickfont=dict(size=16)), 
             yaxis=dict(range=[0, 100], tickfont=dict(size=16)), 
             showlegend=True, 
             legend=dict(font=dict(size=18)), 
