@@ -21,7 +21,13 @@ class BlinkAnalyzer:
                       gt_th: float = 0.1,
                       model_th: float = 0.06,
                       max_offset: int = 10,
-                      significant_gt_movenents: np.ndarray = None) -> Dict:
+                      significant_gt_movenents: np.ndarray = None,
+                      prominence_gt: float = 1.0,
+                      prominence_pred: float = 0.8,
+                      distance: int = 5,
+                      width_min: int = 2,
+                      width_max: int = 20,
+                      use_derivative_validation: bool = True) -> Dict:
         """
         Analyze blink patterns in ground truth and predicted data.
         If pred_blends_diff_list is provided, use it for differential analysis instead of computing derivatives.
@@ -83,7 +89,13 @@ class BlinkAnalyzer:
             gt_th=self.gt_th,
             model_th=self.model_th,
             max_offset=max_offset,
-            significant_gt_movenents=significant_gt_movenents
+            significant_gt_movenents=significant_gt_movenents,
+            prominence_gt=prominence_gt,
+            prominence_pred=prominence_pred,
+            distance=distance,
+            width_min=width_min,
+            width_max=width_max,
+            use_derivative_validation=use_derivative_validation
         )
         
         # Calculate metrics using differential data if available

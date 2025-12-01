@@ -331,28 +331,142 @@ def calculate_metrics(matched_gt, matched_pred, unmatched_gt, unmatched_pred, pr
             
     return TPR, FNR, FPR
 
-def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents):
+def run_blink_analysis(prominence_pred_list, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents, manual_labels_df=None, cumulative_frames=None, prominence_gt=1.0, model_th=None, distance=5, width_min=2, width_max=20, use_derivative_validation=True):
     TPR_lst = []
     FNR_lst = []
     FPR_lst = []
-    for model_th in tqdm(th_list):
+    for prominence_pred in tqdm(prominence_pred_list):
         analyzer = BlinkAnalyzer()
-        gt_th = 0.1
-        model_th = 0.02
-        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th,model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer, significant_gt_movenents=significant_gt_movenents)
-        _, fig = list(blink_analysis_model['plots'].items())[1] 
-        fig.show()
-        matched_gt = len(blink_analysis_model['matches']['matched_gt'])
-        matched_pred = len(blink_analysis_model['matches']['matched_pred'])
-        unmatched_gt = len(blink_analysis_model['matches']['unmatched_gt'])
-        unmatched_pred = len(blink_analysis_model['matches']['unmatched_pred'])
+        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th, model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer, significant_gt_movenents=significant_gt_movenents, prominence_gt=prominence_gt, prominence_pred=prominence_pred, distance=distance, width_min=width_min, width_max=width_max, use_derivative_validation=use_derivative_validation)
+        # _, fig = list(blink_analysis_model['plots'].items())[1] 
+        # fig.show()
+        
+        # Apply manual label corrections if available
+        if manual_labels_df is not None:
+            matched_gt, matched_pred, unmatched_gt, unmatched_pred = apply_manual_labels_to_matches(
+                blink_analysis_model, manual_labels_df, cumulative_frames
+            )
+        else:
+            matched_gt = len(blink_analysis_model['matches']['matched_gt'])
+            matched_pred = len(blink_analysis_model['matches']['matched_pred'])
+            unmatched_gt = len(blink_analysis_model['matches']['unmatched_gt'])
+            unmatched_pred = len(blink_analysis_model['matches']['unmatched_pred'])
+        
         pred_concat = blink_analysis_model['pred_concat']
         TPR, FNR, FPR = calculate_metrics(matched_gt, matched_pred, unmatched_gt, unmatched_pred, pred_concat, quantizer)
         TPR_lst.append(TPR)
         FNR_lst.append(FNR)
         FPR_lst.append(FPR)
         
-    return TPR_lst, FNR_lst, FPR_lst
+    return TPR_lst, FNR_lst, FPR_lst, blink_analysis_model
+
+def run_blink_analysis_single_threshold(model_th, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents, prominence_gt=1.0, prominence_pred=0.8, distance=5, width_min=2, width_max=20, use_derivative_validation=True):
+    """Run blink analysis for a single threshold and return detailed results."""
+    analyzer = BlinkAnalyzer()
+    blink_analysis_model = analyzer.analyze_blinks(
+        gt_th=gt_th,
+        model_th=model_th, 
+        blendshapes_list=blendshapes_list, 
+        pred_blends_list=pred_blends_list, 
+        max_offset=quantizer, 
+        significant_gt_movenents=significant_gt_movenents,
+        prominence_gt=prominence_gt,
+        prominence_pred=prominence_pred,
+        distance=distance,
+        width_min=width_min,
+        width_max=width_max,
+        use_derivative_validation=use_derivative_validation
+    )
+    _, fig = list(blink_analysis_model['plots'].items())[1] 
+    fig.show()
+    return blink_analysis_model
+
+def apply_manual_labels_to_matches(blink_analysis_result, manual_labels_df, cumulative_frames):
+    """
+    Apply manual labels to correct unmatched predictions.
+    
+    When manually labeled as "BLINK": 
+        - The prediction was correct, GT missed this blink
+        - Move from unmatched_pred to matched_pred
+        - Increase total GT count (matched_gt + 1)
+    
+    When manually labeled as "NO BLINK":
+        - The prediction was a false positive
+        - Keep in unmatched_pred (no change)
+    
+    Args:
+        blink_analysis_result: Result from BlinkAnalyzer
+        manual_labels_df: DataFrame with manual labels (columns: global_frame, is_blink)
+        cumulative_frames: List of cumulative frame counts to map global to local frames
+    
+    Returns:
+        Corrected matched_gt, matched_pred, unmatched_gt, unmatched_pred counts
+    """
+    if manual_labels_df is None or 'is_blink' not in manual_labels_df.columns:
+        # No manual labels, return original
+        matched_gt = len(blink_analysis_result['matches']['matched_gt'])
+        matched_pred = len(blink_analysis_result['matches']['matched_pred'])
+        unmatched_gt = len(blink_analysis_result['matches']['unmatched_gt'])
+        unmatched_pred = len(blink_analysis_result['matches']['unmatched_pred'])
+        return matched_gt, matched_pred, unmatched_gt, unmatched_pred
+    
+    # Get original unmatched predictions
+    unmatched_pred_peaks = blink_analysis_result['matches']['unmatched_pred']
+    
+    # Filter manual labels to only those that are labeled
+    labeled_df = manual_labels_df[manual_labels_df['is_blink'].notna()].copy()
+    
+    if len(labeled_df) == 0:
+        # No labels yet
+        matched_gt = len(blink_analysis_result['matches']['matched_gt'])
+        matched_pred = len(blink_analysis_result['matches']['matched_pred'])
+        unmatched_gt = len(blink_analysis_result['matches']['unmatched_gt'])
+        unmatched_pred = len(blink_analysis_result['matches']['unmatched_pred'])
+        return matched_gt, matched_pred, unmatched_gt, unmatched_pred
+    
+    # Count corrections based on manual labels
+    real_blinks_found = 0  # Labeled as "BLINK" - model was correct, GT missed it
+    false_positives_confirmed = 0  # Labeled as "NO BLINK" - model was wrong
+    dont_know_count = 0  # Labeled as "DON'T KNOW" - uncertain, exclude from analysis
+    
+    for _, row in labeled_df.iterrows():
+        global_frame = row['global_frame']
+        is_blink = row['is_blink']
+        
+        # Check if this global frame is in the unmatched predictions
+        if global_frame in unmatched_pred_peaks:
+            if is_blink == 'unknown':
+                # Manual label says "DON'T KNOW"
+                # Remove from unmatched predictions but don't change GT count
+                dont_know_count += 1
+            elif is_blink:
+                # Manual label says this WAS a real blink
+                # GT missed it, but model caught it - model was correct!
+                real_blinks_found += 1
+            else:
+                # Manual label says this was NOT a real blink
+                # Model was wrong - it's a false positive
+                false_positives_confirmed += 1
+    
+    # Calculate corrected counts
+    original_matched_gt = len(blink_analysis_result['matches']['matched_gt'])
+    original_matched_pred = len(blink_analysis_result['matches']['matched_pred'])
+    original_unmatched_gt = len(blink_analysis_result['matches']['unmatched_gt'])
+    original_unmatched_pred = len(blink_analysis_result['matches']['unmatched_pred'])
+    
+    # Add manually confirmed real blinks to GT count and matched predictions
+    corrected_matched_gt = original_matched_gt + real_blinks_found
+    corrected_matched_pred = original_matched_pred + real_blinks_found
+    
+    # Unmatched GT stays the same (we're not finding missed GT blinks, we're confirming model predictions)
+    corrected_unmatched_gt = original_unmatched_gt
+    
+    # Reduce unmatched_pred by:
+    # - real blinks found (they move from unmatched to matched)
+    # - don't know cases (removed from analysis, don't affect GT count)
+    corrected_unmatched_pred = original_unmatched_pred - real_blinks_found - dont_know_count
+    
+    return corrected_matched_gt, corrected_matched_pred, corrected_unmatched_gt, corrected_unmatched_pred
 
 def velocity_agreement(gt_bs, pred_bs, already_diff=False):
     if already_diff:
@@ -1486,6 +1600,7 @@ def main():
     all_significant_gt_movenents = []
     all_significant_pred_movenents = []
     all_significant_pred_model2_movenents = []
+    successfully_loaded_tuples = []  # Track which files were successfully loaded
     
     # Process each file
     for run_path, tar_id, side in tqdm(run_path_tar_id_side_tuples, desc="Loading files"):
@@ -1569,10 +1684,23 @@ def main():
         all_significant_gt_movenents.append(significant_gt_movenents)
         all_significant_pred_movenents.append(significant_pred_movenents)
         all_significant_pred_model2_movenents.append(significant_pred_model2_movenents)
+        successfully_loaded_tuples.append((run_path, tar_id, side))  # Track successful load
     
     # Remove last boundary (end of last file)
     if file_boundaries:
         file_boundaries = file_boundaries[:-1]
+    
+    # Print summary of loaded files
+    print(f"\n" + "="*80)
+    print(f"FILE LOADING SUMMARY")
+    print("="*80)
+    print(f"Total files in split: {len(run_path_tar_id_side_tuples)}")
+    print(f"Successfully loaded: {len(successfully_loaded_tuples)}")
+    print(f"Skipped: {len(run_path_tar_id_side_tuples) - len(successfully_loaded_tuples)}")
+    if len(successfully_loaded_tuples) != len(run_path_tar_id_side_tuples):
+        print("\nWARNING: Some files were skipped during loading!")
+        print("This is OK - the code now correctly maps peaks to the successfully loaded files.")
+    print("="*80)
     
     # Concatenate all data
     print(f"\n\nConcatenating all files...")
@@ -1837,18 +1965,330 @@ def main():
         print("BLINK DETECTION ANALYSIS (ROC CURVE)")
         print("="*80)
         
-        gt_th = 0.06
+        # Load manual labels if available
+        # Use the same pickle file that contains the unmatched peaks and manual labels
+        manual_labels_file = Path("unmatched_pred_peaks_prom0.5000.pkl")
+        manual_labels_df = None
+        if manual_labels_file.exists():
+            try:
+                manual_labels_df = pd.read_pickle(manual_labels_file)
+                if 'is_blink' in manual_labels_df.columns:
+                    labeled_count = manual_labels_df['is_blink'].notna().sum()
+                    blink_count = (manual_labels_df['is_blink'] == True).sum()
+                    no_blink_count = (manual_labels_df['is_blink'] == False).sum()
+                    dont_know_count = (manual_labels_df['is_blink'] == 'unknown').sum()
+                    print(f"\n{'='*80}")
+                    print(f"MANUAL LABELS LOADED")
+                    print(f"{'='*80}")
+                    print(f"Total labeled: {labeled_count}")
+                    print(f"Labeled as BLINK: {int(blink_count)}")
+                    print(f"Labeled as NO BLINK: {int(no_blink_count)}")
+                    print(f"Labeled as DON'T KNOW: {int(dont_know_count)}")
+                    print(f"These labels will be used to correct the ROC analysis")
+                    print(f"{'='*80}\n")
+                else:
+                    print("Warning: Manual labels file found but 'is_blink' column missing")
+                    manual_labels_df = None
+            except Exception as e:
+                print(f"Warning: Could not load manual labels: {e}")
+                manual_labels_df = None
+        else:
+            print("\nNo manual labels file found. Running analysis without manual corrections.\n")
+        
+        # Use prominence-based detection (relative to local DC)
+        gt_th = None  # Disable absolute height threshold for GT
+        model_th = None  # Disable absolute height threshold for predictions
         quantizer = 8
-        dense_region = np.linspace(0, 0.07, 100, endpoint=True)
-        sparse_region1 = np.linspace(-10, -1, 2, endpoint=True)
-        sparse_region2 = np.linspace(-1, 0, 2, endpoint=False)
-        sparse_region3 = np.linspace(0.1, 3, 2, endpoint=True)
-
-        th_list = np.unique(np.concatenate([sparse_region1, sparse_region2, dense_region, sparse_region3])) #!!!!!!!!!!!!!!
+        
+        # Peak detection parameters
+        prominence_gt = 1.0      # GT peak prominence (how much it stands out from baseline)
+        distance = 5             # Minimum frames between peaks
+        width_min = 2            # Minimum peak width
+        width_max = 20           # Maximum peak width
+        use_derivative_validation = True  # Validate peaks with derivative pattern
+        
+        # Create prominence scan list for predictions (0.5 to 3.0)
+        # Dense sampling in the critical range
+        prominence_pred_list = np.linspace(0, 6.0, 500)
+        
+        print(f"Total prominence values to test: {len(prominence_pred_list)}")
+        print(f"Prominence range: {prominence_pred_list[0]:.2f} to {prominence_pred_list[-1]:.2f}")
         # th_list = np.array([0.02, 0.05, 0.1])
         
+        # Calculate cumulative frames for mapping global to local frames
+        cumulative_frames_list = [0]
+        for gt_bs in all_gt_blendshapes:
+            cumulative_frames_list.append(cumulative_frames_list[-1] + gt_bs.shape[0])
+        
         print(f"Running blink analysis for {MODEL_NAME}...")
-        TPR_lst, FNR_lst, FPR_lst = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes, quantizer, gt_th, all_significant_gt_movenents)
+        print(f"Scanning prominence_pred from {prominence_pred_list[0]:.2f} to {prominence_pred_list[-1]:.2f}")
+        TPR_lst, FNR_lst, FPR_lst, _ = run_blink_analysis(
+            prominence_pred_list, 
+            all_gt_blendshapes, 
+            all_pred_blendshapes, 
+            quantizer, 
+            gt_th, 
+            all_significant_gt_movenents,
+            manual_labels_df=manual_labels_df,
+            cumulative_frames=cumulative_frames_list,
+            prominence_gt=prominence_gt,
+            model_th=model_th,
+            distance=distance,
+            width_min=width_min,
+            width_max=width_max,
+            use_derivative_validation=use_derivative_validation
+        )
+        
+        # Find prominence_pred that gives 90% TPR
+        TPR_arr = np.array(TPR_lst)
+        target_tpr = 90.0
+        
+        # Find the closest TPR to 90%
+        idx_closest = np.argmin(np.abs(TPR_arr - target_tpr))
+        closest_tpr = TPR_arr[idx_closest]
+        closest_prominence_pred = prominence_pred_list[idx_closest]
+        closest_fpr = FPR_lst[idx_closest]
+        
+        print("\n" + "="*80)
+        print(f"PROMINENCE_PRED FOR 90% TRUE POSITIVE RATE")
+        print("="*80)
+        print(f"Target TPR: {target_tpr}%")
+        print(f"Closest TPR found: {closest_tpr:.2f}%")
+        print(f"prominence_pred: {closest_prominence_pred:.4f}")
+        print(f"FPR at this prominence: {closest_fpr:.2f} (false blinks per minute)")
+        print("="*80 + "\n")
+        
+        # Also find all prominence values within 1% of target
+        tolerance = 1.0
+        within_tolerance = np.abs(TPR_arr - target_tpr) <= tolerance
+        if np.any(within_tolerance):
+            print(f"All prominence_pred values within {tolerance}% of target TPR:")
+            print("-"*80)
+            for i in np.where(within_tolerance)[0]:
+                print(f"  prominence_pred: {prominence_pred_list[i]:.4f}  ->  TPR: {TPR_arr[i]:.2f}%,  FPR: {FPR_lst[i]:.2f}")
+            print("="*80 + "\n")
+        
+        # Use the specified prominence_pred value
+        specified_prominence_pred = closest_prominence_pred
+        print("\n" + "="*80)
+        print(f"ANALYZING UNMATCHED PREDICTIONS WITH prominence_pred = {specified_prominence_pred:.4f}")
+        print("="*80)
+        
+        # Run analysis with the specified prominence
+        blink_analysis_result = run_blink_analysis_single_threshold(
+            model_th, 
+            all_gt_blendshapes, 
+            all_pred_blendshapes, 
+            quantizer, 
+            gt_th, 
+            all_significant_gt_movenents,
+            prominence_gt=prominence_gt,
+            prominence_pred=specified_prominence_pred,
+            distance=distance,
+            width_min=width_min,
+            width_max=width_max,
+            use_derivative_validation=use_derivative_validation
+        )
+        
+        # Get unmatched predictions
+        unmatched_pred_peaks = blink_analysis_result['matches']['unmatched_pred']
+        
+        print(f"\nFound {len(unmatched_pred_peaks)} unmatched predicted peaks")
+        
+        # Create a table with information about each unmatched peak
+        unmatched_data = []
+        
+        # Calculate cumulative frame counts to map global frame to file
+        cumulative_frames = [0]
+        for gt_bs in all_gt_blendshapes:
+            cumulative_frames.append(cumulative_frames[-1] + gt_bs.shape[0])
+        
+        # Frame rate for timestamp conversion
+        # GT blendshapes are downsampled from 30fps by skipping every 6th frame
+        # This results in: 30 * (5/6) = 25 fps
+        blendshape_fps = 25.0
+        
+        # Verify that successfully_loaded_tuples matches all_gt_blendshapes
+        assert len(successfully_loaded_tuples) == len(all_gt_blendshapes), \
+            f"Mismatch: {len(successfully_loaded_tuples)} loaded tuples vs {len(all_gt_blendshapes)} GT blendshapes"
+        
+        for peak_frame in unmatched_pred_peaks:
+            # Find which file this peak belongs to
+            file_idx = None
+            local_frame = None
+            
+            for i in range(len(cumulative_frames) - 1):
+                if cumulative_frames[i] <= peak_frame < cumulative_frames[i + 1]:
+                    file_idx = i
+                    local_frame = peak_frame - cumulative_frames[i]
+                    break
+            
+            if file_idx is not None and file_idx < len(successfully_loaded_tuples):
+                run_path, tar_id, side = successfully_loaded_tuples[file_idx]
+                
+                # Convert local frame (in blendshape space at 25 fps) to timestamp in seconds
+                timestamp_seconds = local_frame / blendshape_fps
+                
+                unmatched_data.append({
+                    'global_frame': peak_frame,
+                    'file_index': file_idx,
+                    'local_frame': local_frame,
+                    'timestamp_seconds': timestamp_seconds,
+                    'run_path': run_path,
+                    'tar_id': tar_id,
+                    'side': side
+                })
+        
+        # Create DataFrame
+        unmatched_df = pd.DataFrame(unmatched_data)
+        
+        # Preserve existing manual labels if the file already exists
+        output_file = Path.cwd() / f"unmatched_pred_peaks_prom{specified_prominence_pred:.4f}.pkl"
+        if output_file.exists():
+            try:
+                existing_df = pd.read_pickle(output_file)
+                if 'is_blink' in existing_df.columns:
+                    print("\n" + "="*80)
+                    print("PRESERVING EXISTING MANUAL LABELS")
+                    print("="*80)
+                    # Merge manual labels from existing file based on global_frame
+                    unmatched_df = unmatched_df.merge(
+                        existing_df[['global_frame', 'is_blink']], 
+                        on='global_frame', 
+                        how='left'
+                    )
+                    labeled_count = unmatched_df['is_blink'].notna().sum()
+                    print(f"Preserved {labeled_count} existing manual labels")
+                    print("="*80 + "\n")
+            except Exception as e:
+                print(f"Warning: Could not load existing labels: {e}")
+        
+        # Print table to terminal
+        print("\n" + "="*80)
+        print("UNMATCHED PREDICTED PEAKS TABLE")
+        print("="*80)
+        if len(unmatched_df) > 0:
+            # Set pandas display options for better formatting
+            pd.set_option('display.max_rows', None)
+            pd.set_option('display.max_columns', None)
+            pd.set_option('display.width', None)
+            pd.set_option('display.max_colwidth', None)
+            
+            print(unmatched_df.to_string(index=False))
+            print("\n" + "="*80)
+            print(f"Total unmatched predictions: {len(unmatched_df)}")
+            print("="*80)
+            
+            # Plot z-scored signals with peak matching to verify unmatched peaks
+            print("\nGenerating verification plot of z-scored signals with peak matching...")
+            
+            # Get the concatenated signals and matches from blink_analysis_result
+            gt_concat = blink_analysis_result['gt_concat']
+            pred_concat = blink_analysis_result['pred_concat']
+            matches = blink_analysis_result['matches']
+            
+            # Compute z-scores (same as in visualization.py)
+            from scipy.signal import filtfilt
+            from scipy.stats import zscore
+            b = np.ones(3) / 3
+            gt_filtered = filtfilt(b, 1, gt_concat)
+            gt_zscore = zscore(gt_filtered)
+            pred_zscore = zscore(pred_concat)
+            
+            # Create frame arrays (instead of time arrays)
+            frames_gt = np.arange(len(gt_concat))
+            frames_pred = np.arange(len(pred_concat))
+            
+            # Create the plot
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            
+            # Plot GT z-scored signal
+            fig.add_trace(go.Scatter(
+                x=frames_gt,
+                y=gt_zscore,
+                mode='lines',
+                name='GT Z-scored',
+                line=dict(color='blue', width=1),
+                opacity=0.7
+            ))
+            
+            # Plot Pred z-scored signal
+            fig.add_trace(go.Scatter(
+                x=frames_pred,
+                y=pred_zscore,
+                mode='lines',
+                name='Pred Z-scored',
+                line=dict(color='orange', width=1),
+                opacity=0.7
+            ))
+            
+            # Plot matched GT peaks
+            if len(matches['matched_gt']) > 0:
+                fig.add_trace(go.Scatter(
+                    x=frames_gt[matches['matched_gt']],
+                    y=gt_zscore[matches['matched_gt']],
+                    mode='markers',
+                    name='Matched GT Peaks',
+                    marker=dict(color='green', size=10, symbol='circle')
+                ))
+            
+            # Plot matched Pred peaks
+            if len(matches['matched_pred']) > 0:
+                fig.add_trace(go.Scatter(
+                    x=frames_pred[matches['matched_pred']],
+                    y=pred_zscore[matches['matched_pred']],
+                    mode='markers',
+                    name='Matched Pred Peaks',
+                    marker=dict(color='lightgreen', size=8, symbol='circle')
+                ))
+            
+            # Plot unmatched GT peaks
+            if len(matches['unmatched_gt']) > 0:
+                fig.add_trace(go.Scatter(
+                    x=frames_gt[matches['unmatched_gt']],
+                    y=gt_zscore[matches['unmatched_gt']],
+                    mode='markers',
+                    name='Unmatched GT Peaks',
+                    marker=dict(color='red', size=10, symbol='x')
+                ))
+            
+            # Plot unmatched Pred peaks (THESE ARE SAVED TO PKL)
+            if len(matches['unmatched_pred']) > 0:
+                fig.add_trace(go.Scatter(
+                    x=frames_pred[matches['unmatched_pred']],
+                    y=pred_zscore[matches['unmatched_pred']],
+                    mode='markers',
+                    name='Unmatched Pred Peaks (SAVED TO PKL)',
+                    marker=dict(color='purple', size=12, symbol='star', line=dict(color='black', width=1))
+                ))
+            
+            fig.update_layout(
+                title=f'Z-scored Signals with Peak Matching (prominence_pred={specified_prominence_pred:.4f})<br>Purple Stars = Unmatched Pred Peaks Saved to PKL',
+                xaxis_title='Frame Index',
+                yaxis_title='Z-score',
+                hovermode='closest',
+                height=600,
+                showlegend=True,
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=0.01
+                )
+            )
+            
+            fig.show()
+            print("Plot displayed. Purple stars show the unmatched pred peaks that will be saved to the pickle file.")
+            
+            # Save to pickle (output_file already defined earlier when preserving labels)
+            unmatched_df.to_pickle(output_file)
+            print(f"\nSaved to: {output_file}")
+            if 'is_blink' in unmatched_df.columns:
+                labeled_count = unmatched_df['is_blink'].notna().sum()
+                print(f"Manual labels preserved: {labeled_count}/{len(unmatched_df)}")
+        else:
+            print("No unmatched predictions found!")
         
         # print(f"Running blink analysis for {MODEL2_NAME}...")
         # TPR_lst2, FNR_lst2, FPR_lst2 = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes_model2, quantizer, gt_th)
@@ -1868,14 +2308,13 @@ def main():
         # x_range_min = max(0, min_fpr - 0.1 * fpr_range) if fpr_range > 0 else 0
         
         fig_roc.update_layout(
-            title=dict(text=f'ROC Curve - Blink Detection', font=dict(size=30)), 
-            xaxis_title=dict(text='# False blinks in minute', font=dict(size=20)), 
-            # xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=20)), 
-            yaxis_title=dict(text='True Positive Rate (%)', font=dict(size=20)), 
-            # xaxis=dict(range=[x_range_min, x_range_max], tickfont=dict(size=16)), 
-            yaxis=dict(range=[0, 100], tickfont=dict(size=16)), 
-            showlegend=True, 
-            legend=dict(font=dict(size=18)), 
+            title=dict(text=f'ROC Curve - Blink Detection (Prominence-based)', font=dict(size=36)), 
+            xaxis_title=dict(text='# False blinks in minute', font=dict(size=26)), 
+            # xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=26)), 
+            yaxis_title=dict(text='True Positive Rate (%)', font=dict(size=26)), 
+            xaxis=dict(tickfont=dict(size=22)), 
+            yaxis=dict(range=[0, 100], tickfont=dict(size=22)), 
+            showlegend=False, 
             width=1400,  # Increased width for better visibility
             height=800   # Increased height as well
         )
