@@ -18,10 +18,13 @@ class BlinkAnalyzer:
                       blendshapes_list: List[np.ndarray], 
                       pred_blends_list: List[np.ndarray],
                       pred_blends_diff_list: List[np.ndarray] = None,
-                      gt_th: float = 0.1,
-                      model_th: float = 0.06,
+                      gt_th: float = 0.5,
+                      model_th: float = 0.5,
                       max_offset: int = 10,
-                      significant_gt_movenents: np.ndarray = None) -> Dict:
+                      gt_prominence: float = 1.0,
+                      pred_prominence: float = 1.0,
+                      significant_gt_movenents: np.ndarray = None,
+                      manual_gt_peaks: np.ndarray = None) -> Dict:
         """
         Analyze blink patterns in ground truth and predicted data.
         If pred_blends_diff_list is provided, use it for differential analysis instead of computing derivatives.
@@ -83,15 +86,14 @@ class BlinkAnalyzer:
             gt_th=self.gt_th,
             model_th=self.model_th,
             max_offset=max_offset,
-            significant_gt_movenents=significant_gt_movenents
+            gt_prominence=gt_prominence,
+            pred_prominence=pred_prominence,
+            significant_gt_movenents=significant_gt_movenents,
+            manual_gt_peaks=manual_gt_peaks
         )
-        
-        # Calculate metrics using differential data if available
-        metrics = self._calculate_metrics(resampled_data)
         
         return {
             'plots': plots,
-            'metrics': metrics,
             'processed_data': resampled_data,
             'matches': matches,
             'pred_concat': resampled_data['pred_concat'],
@@ -231,34 +233,3 @@ class BlinkAnalyzer:
             'pred_diff_sequences': resampled_pred_diff_sequences
         }
 
-    def _calculate_metrics(self, data: Dict[str, np.ndarray]) -> Dict[str, float]:
-        """Calculate various metrics for blink analysis."""
-        from scipy.signal import find_peaks
-        from scipy.stats import pearsonr
-        
-        gt_filtered = savgol_filter(data['gt_concat'], 9, 2, mode='interp')
-        pred_filtered = savgol_filter(data['pred_concat'], 9, 2, mode='interp')
-        # gt_filtered = np.convolve(data['gt_concat'], np.ones(3)/3, mode='same')
-        # pred_filtered = np.convolve(data['pred_concat'], np.ones(3)/3, mode='same')
-        
-        # Find peaks
-        gt_peaks, _ = find_peaks(np.diff(gt_filtered), height=self.gt_th)
-        pred_peaks, _ = find_peaks(np.diff(pred_filtered), height=self.model_th)
-        
-        # gt_peaks, _ = find_peaks(np.diff(gt_filtered), height=self.gt_th)
-        # pred_peaks, _ = find_peaks(np.diff(pred_filtered), height=self.model_th)
-        
-        # # Find peaks
-        # gt_peaks, _ = find_peaks(np.diff(gt_filtered), height=self.gt_th)
-        # pred_peaks, _ = find_peaks(np.diff(pred_filtered), height=self.model_th)
-        
-        # Calculate correlation
-        corr, _ = pearsonr(np.diff(gt_filtered), np.diff(pred_filtered))
-        
-        return {
-            'num_gt_peaks': len(gt_peaks),
-            'num_pred_peaks': len(pred_peaks),
-            'correlation': corr,
-            'mean_error': np.mean(np.abs(gt_filtered - pred_filtered)),
-            'std_error': np.std(np.abs(gt_filtered - pred_filtered))
-        }
