@@ -36,9 +36,13 @@ ROW_INDICES = None
 # ROW_INDICES = list(range(0, 4))#[3663, 3953, 3642, 317, 6117, 1710, 3252, 1820, 3847]
 
 # Random sampling configuration
-NUM_RANDOM_SAMPLES = 50# None  # Set to None to process all rows, or a number to randomly sample
+NUM_RANDOM_SAMPLES = 1000# None  # Set to None to process all rows, or a number to randomly sample
 RANDOM_SEED = 42  # Set seed for reproducibility (None for different samples each run)
 THRESHOLD_FACTOR = 0.25
+
+# Manual GT peaks configuration
+USE_MANUAL_GT_PEAKS = True  # Set to True to use manually edited GT peaks from final_gt_peaks.pkl
+MANUAL_GT_PEAKS_FILE = "final_gt_peaks.pkl"  # Path to manually edited GT peaks
 # Model configuration - which prediction file to load
 MODEL_NAME = 'causal_preprocessor_encoder_with_smile'
 MODEL2_NAME = 'causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side'
@@ -331,17 +335,77 @@ def calculate_metrics(matched_gt, matched_pred, unmatched_gt, unmatched_pred, pr
             
     return TPR, FNR, FPR
 
-def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents):
+def load_manual_gt_peaks(filepath="final_gt_peaks.pkl"):
+    """Load manually edited GT peaks from pickle file."""
+    import pickle
+    from pathlib import Path
+    
+    if not Path(filepath).exists():
+        print(f"Warning: Manual GT peaks file not found: {filepath}")
+        return None
+    
+    try:
+        with open(filepath, 'rb') as f:
+            manual_peaks = pickle.load(f)
+        print(f"✓ Loaded {len(manual_peaks)} manually edited GT peaks from {filepath}")
+        return manual_peaks
+    except Exception as e:
+        print(f"Error loading manual GT peaks: {e}")
+        return None
+
+def load_removed_peaks(filepath="removed_peaks.pkl", convert_from_30fps_to_25fps=True):
+    """Load peaks to be removed from GT.
+    
+    Args:
+        filepath: Path to removed peaks file
+        convert_from_30fps_to_25fps: If True, converts peak indices from 30fps to 25fps (divide by 1.2)
+    
+    Returns array of peak indices (in concatenated format) to remove.
+    """
+    import pickle
+    from pathlib import Path
+    
+    if not Path(filepath).exists():
+        print(f"Warning: Removed peaks file not found: {filepath}")
+        return None
+    
+    try:
+        with open(filepath, 'rb') as f:
+            removed_peaks = pickle.load(f)
+        
+        if isinstance(removed_peaks, np.ndarray):
+            removed_peaks_array = removed_peaks
+        elif isinstance(removed_peaks, (list, tuple, set)):
+            removed_peaks_array = np.array(list(removed_peaks))
+        else:
+            print(f"Warning: Unexpected format for removed peaks: {type(removed_peaks)}")
+            return None
+        
+        # Convert from 30fps to 25fps if needed (peak editor saves at 30fps but blendshapes are 25fps)
+        if convert_from_30fps_to_25fps:
+            removed_peaks_array = (removed_peaks_array / 1.2).astype(np.int64)
+            print(f"✓ Loaded {len(removed_peaks_array)} peaks to remove from {filepath} (converted from 30fps to 25fps)")
+        else:
+            print(f"✓ Loaded {len(removed_peaks_array)} peaks to remove from {filepath}")
+        
+        return removed_peaks_array
+    except Exception as e:
+        print(f"Error loading removed peaks: {e}")
+        return None
+
+def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents, manual_gt_peaks=None):
     TPR_lst = []
     FNR_lst = []
     FPR_lst = []
+    saved_blink_analysis = None  # Store the last analysis for saving
+    
     for model_th in tqdm(th_list):
         analyzer = BlinkAnalyzer()
-        gt_th = 0.1
-        model_th = 0.02
-        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th,model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer, significant_gt_movenents=significant_gt_movenents)
-        _, fig = list(blink_analysis_model['plots'].items())[1] 
-        fig.show()
+        # gt_th = 0
+        # model_th = 0.01
+        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th,model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer, significant_gt_movenents=significant_gt_movenents, manual_gt_peaks=manual_gt_peaks)
+        # _, fig = list(blink_analysis_model['plots'].items())[1] 
+        # fig.show()
         matched_gt = len(blink_analysis_model['matches']['matched_gt'])
         matched_pred = len(blink_analysis_model['matches']['matched_pred'])
         unmatched_gt = len(blink_analysis_model['matches']['unmatched_gt'])
@@ -352,7 +416,10 @@ def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, g
         FNR_lst.append(FNR)
         FPR_lst.append(FPR)
         
-    return TPR_lst, FNR_lst, FPR_lst
+        # Save the last analysis for later use
+        saved_blink_analysis = blink_analysis_model
+        
+    return TPR_lst, FNR_lst, FPR_lst, saved_blink_analysis
 
 def velocity_agreement(gt_bs, pred_bs, already_diff=False):
     if already_diff:
@@ -1839,19 +1906,52 @@ def main():
         
         gt_th = 0.06
         quantizer = 8
-        dense_region = np.linspace(0, 0.07, 100, endpoint=True)
-        sparse_region1 = np.linspace(-10, -1, 2, endpoint=True)
-        sparse_region2 = np.linspace(-1, 0, 2, endpoint=False)
-        sparse_region3 = np.linspace(0.1, 3, 2, endpoint=True)
+        dense_region = np.linspace(0, 10, 30, endpoint=True)
+        # sparse_region1 = np.linspace(-10, -1, 2, endpoint=True)
+        # sparse_region2 = np.linspace(-1, 0, 2, endpoint=False)
+        # sparse_region3 = np.linspace(0.1, 3, 2, endpoint=True)
 
-        th_list = np.unique(np.concatenate([sparse_region1, sparse_region2, dense_region, sparse_region3])) #!!!!!!!!!!!!!!
+        th_list = np.unique(np.concatenate([dense_region])) #!!!!!!!!!!!!!!
+        # th_list = np.unique(np.concatenate([sparse_region1, sparse_region2, dense_region, sparse_region3])) #!!!!!!!!!!!!!!
         # th_list = np.array([0.02, 0.05, 0.1])
         
-        print(f"Running blink analysis for {MODEL_NAME}...")
-        TPR_lst, FNR_lst, FPR_lst = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes, quantizer, gt_th, all_significant_gt_movenents)
+        # Load manual GT peaks if enabled
+        manual_gt_peaks = None
+        if USE_MANUAL_GT_PEAKS:
+            print("\n" + "="*80)
+            print("LOADING MANUALLY EDITED GT PEAKS")
+            print("="*80)
+            manual_gt_peaks = load_manual_gt_peaks(MANUAL_GT_PEAKS_FILE)
+            if manual_gt_peaks is not None:
+                print(f"✓ Using manually edited GT peaks for analysis")
+            else:
+                print(f"✗ Manual GT peaks not found, falling back to automatic detection")
+        
+        print(f"\nRunning blink analysis for {MODEL_NAME}...")
+        TPR_lst, FNR_lst, FPR_lst, blink_analysis_model = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes, quantizer, gt_th, all_significant_gt_movenents, manual_gt_peaks=manual_gt_peaks)
+        
+        # Save concatenated data for peak editor (with timestamp to avoid overwriting)
+        print("\n" + "="*80)
+        print("SAVING CONCATENATED DATA FOR PEAK EDITOR")
+        print("="*80)
+        try:
+            from save_concatenated_for_editing import save_for_peak_editor
+            saved_file = save_for_peak_editor(
+                gt_concat=blink_analysis_model['gt_concat'],
+                pred_concat=blink_analysis_model['pred_concat'],
+                matches=blink_analysis_model['matches'],
+                output_file="concatenated_signals.pkl",
+                use_timestamp=True  # Adds timestamp to avoid overwriting
+            )
+            print(f"✓ Concatenated data saved successfully!")
+            print(f"  To edit GT peaks, run:")
+            print(f"    python launch_peak_editor_from_analysis.py {saved_file}")
+        except Exception as e:
+            print(f"✗ Warning: Could not save concatenated data: {e}")
+            print(f"  You can still manually save the data if needed.")
         
         # print(f"Running blink analysis for {MODEL2_NAME}...")
-        # TPR_lst2, FNR_lst2, FPR_lst2 = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes_model2, quantizer, gt_th)
+        # TPR_lst2, FNR_lst2, FPR_lst2, _ = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes_model2, quantizer, gt_th, all_significant_gt_movenents)
 
         # Create ROC curve using plotly
         import plotly.graph_objects as go
@@ -1881,6 +1981,115 @@ def main():
         )
         # fig_roc.update_layout(title=f'ROC Curve - Blink Detection - Quantizer {quantizer}, gt_th {gt_th}', xaxis_title='False Positive Rate (%)', yaxis_title='True Positive Rate (%)', xaxis=dict(range=[0, 100]), yaxis=dict(range=[0, 100]), showlegend=True, width=800, height=600)
         fig_roc.show()
+        
+        # Save unmatched peaks for threshold that gives ~2 false positives per minute
+        print("\n" + "="*80)
+        print("SAVING UNMATCHED PRED PEAKS FOR THRESHOLD WITH ~2 FP/MIN")
+        print("="*80)
+        
+        # Find threshold closest to 2 false positives per minute
+        target_fpr = 2.0  # false positives per minute
+        fpr_diff = np.abs(np.array(FPR_lst) - target_fpr)
+        best_tpr_idx = np.argmin(fpr_diff)
+        best_th = th_list[best_tpr_idx]
+        best_tpr = TPR_lst[best_tpr_idx]
+        best_fpr = FPR_lst[best_tpr_idx]
+        
+        print(f"Selected threshold: {best_th:.4f}")
+        print(f"  TPR: {best_tpr:.2f}%")
+        print(f"  FPR: {best_fpr:.2f} false positives per minute (target: {target_fpr})")
+        
+        # Re-run analysis with best threshold to get unmatched peaks
+        analyzer = BlinkAnalyzer()
+        best_blink_analysis = analyzer.analyze_blinks(
+            gt_th=gt_th,
+            model_th=best_th,
+            blendshapes_list=all_gt_blendshapes,
+            pred_blends_list=all_pred_blendshapes,
+            max_offset=quantizer,
+            significant_gt_movenents=all_significant_gt_movenents,
+            manual_gt_peaks=manual_gt_peaks
+        )
+        
+        unmatched_pred_peaks = best_blink_analysis['matches']['unmatched_pred']
+        print(f"Number of unmatched pred peaks: {len(unmatched_pred_peaks)}")
+        
+        # Map unmatched peaks back to original files
+        unmatched_peaks_data = []
+        
+        for peak_frame in unmatched_pred_peaks:
+            # Find which file this peak belongs to
+            file_idx = 0
+            for i, boundary in enumerate(file_boundaries):
+                if peak_frame < boundary:
+                    file_idx = i
+                    break
+            
+            # Calculate frame number within the original file
+            if file_idx == 0:
+                frame_in_file = peak_frame
+            else:
+                frame_in_file = peak_frame - file_boundaries[file_idx - 1]
+            
+            # Get run_path, tar_id, side for this file
+            run_path, tar_id, side = run_path_tar_id_side_tuples[file_idx]
+            
+            # Get the peak value from the concatenated prediction signal
+            peak_value = best_blink_analysis['pred_concat'][peak_frame]
+            
+            # Convert frame numbers from 25 fps (blendshapes) to 30 fps (video)
+            # video_frame = blendshapes_frame * (30 / 25) = blendshapes_frame * 1.2
+            video_frame_in_file = int(frame_in_file * 30 / 25)
+            
+            unmatched_peaks_data.append({
+                'peak_frame_concat': peak_frame,
+                'peak_frame_in_file': frame_in_file,
+                'video_frame_in_file': video_frame_in_file,
+                'peak_value': peak_value,
+                'run_path': run_path,
+                'tar_id': tar_id,
+                'side': side,
+                'threshold': best_th
+            })
+        
+        # Convert to DataFrame and save
+        unmatched_df = pd.DataFrame(unmatched_peaks_data)
+        output_file = f"unmatched_pred_peaks_2fpm_th{best_th:.4f}.pkl"
+        unmatched_df.to_pickle(output_file)
+        
+        print(f"✓ Saved {len(unmatched_peaks_data)} unmatched pred peaks to: {output_file}")
+        print(f"\nDataFrame columns: {list(unmatched_df.columns)}")
+        print(f"\nFirst few rows:")
+        print(unmatched_df.head())
+        
+        # Plot concatenated pred signal with unmatched peaks using pre-generated plot
+        print("\n" + "="*80)
+        print("PLOTTING CONCATENATED PRED SIGNAL WITH UNMATCHED PEAKS")
+        print("="*80)
+        
+        # Use the pre-generated plot from blink_analysis_model (much faster!)
+        # The plot is stored in best_blink_analysis['plots']
+        if 'plots' in best_blink_analysis and len(best_blink_analysis['plots']) > 0:
+            # Get the plot (usually the second plot shows the concatenated signals)
+            plot_items = list(best_blink_analysis['plots'].items())
+            if len(plot_items) > 1:
+                _, fig_pred_peaks = plot_items[1]
+            else:
+                _, fig_pred_peaks = plot_items[0]
+            
+            # Update the title to include threshold, TPR, and FPR information
+            fig_pred_peaks.update_layout(
+                title_text=f"Concatenated Predicted Signal with Unmatched Peaks<br>"
+                          f"<sub>Pred Threshold: {best_th:.4f} | TPR: {best_tpr:.2f}% | FPR: {best_fpr:.2f} FP/min</sub><br>"
+                          f"<sub>{MODEL_NAME}_H{HISTORY_SIZE}_LA{LOOKAHEAD_SIZE} | {len(unmatched_peaks_data)} unmatched peaks</sub>",
+                title_x=0.5,
+                title_xanchor='center',
+                title_font_size=20,
+            )
+            
+            fig_pred_peaks.show()
+        else:
+            print("Warning: No plots found in blink_analysis_model")
     
     print("\n" + "="*80)
     print("ALL ANALYSIS COMPLETE")
