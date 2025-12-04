@@ -43,6 +43,8 @@ THRESHOLD_FACTOR = 0.25
 # Manual GT peaks configuration
 USE_MANUAL_GT_PEAKS = True  # Set to True to use manually edited GT peaks from final_gt_peaks.pkl
 MANUAL_GT_PEAKS_FILE = "final_gt_peaks.pkl"  # Path to manually edited GT peaks
+MANUAL_BLINK_LABELS_CSV = "manual_blink_labels.csv"  # Path to manual blink labels CSV
+EDGE_MARGIN = 10  # Number of frames from beginning/end of recordings to exclude from peak detection
 # Model configuration - which prediction file to load
 MODEL_NAME = 'causal_preprocessor_encoder_with_smile'
 MODEL2_NAME = 'causal_fastconformer_layernorm_landmarks_all_blendshapes_one_side'
@@ -324,6 +326,7 @@ def load_gt_blendshapes(run_path: str):
         return None
 
 def calculate_metrics(matched_gt, matched_pred, unmatched_gt, unmatched_pred, pred_concat, quantizer):
+    unmatched_gt -=45
     P = matched_gt + unmatched_gt
     N = len(pred_concat) / quantizer - P    
     TP = matched_pred
@@ -335,8 +338,172 @@ def calculate_metrics(matched_gt, matched_pred, unmatched_gt, unmatched_pred, pr
             
     return TPR, FNR, FPR
 
-def load_manual_gt_peaks(filepath="final_gt_peaks.pkl"):
-    """Load manually edited GT peaks from pickle file."""
+def load_dont_know_peaks_to_exclude(csv_filepath, file_frame_mapping):
+    """Load peaks labeled as 'dont_know' from CSV to exclude from predictions.
+    
+    Args:
+        csv_filepath: Path to manual_blink_labels.csv
+        file_frame_mapping: Dict mapping (run_path, tar_id, side) to (start_frame, end_frame)
+    
+    Returns:
+        Array of global frame positions for 'dont_know' peaks to exclude, or None if not found
+    """
+    if not Path(csv_filepath).exists():
+        print(f"Manual blink labels CSV not found: {csv_filepath}")
+        return None
+    
+    try:
+        # Load CSV
+        manual_labels_df = pd.read_csv(csv_filepath)
+        
+        # Filter for dont_know labels only
+        dont_know_labels = manual_labels_df[manual_labels_df['label'] == 'dont_know'].copy()
+        
+        if len(dont_know_labels) == 0:
+            return None
+        
+        print(f"\nFound {len(dont_know_labels)} 'dont_know' labels to exclude from predictions")
+        
+        # Convert to global frame positions
+        exclude_peaks = []
+        skipped_count = 0
+        
+        for idx, row in dont_know_labels.iterrows():
+            run_path = row['run_path']
+            tar_id = row['tar_id']
+            side = row['side']
+            peak_frame_25fps = int(row['peak_frame_25fps'])
+            
+            # Look up the file in our mapping
+            key = (run_path, tar_id, side)
+            if key not in file_frame_mapping:
+                skipped_count += 1
+                continue
+            
+            start_frame, end_frame = file_frame_mapping[key]
+            
+            # Calculate global frame position
+            global_frame = start_frame + peak_frame_25fps
+            
+            # Validate frame is within bounds
+            if global_frame < start_frame or global_frame >= end_frame:
+                skipped_count += 1
+                continue
+            
+            exclude_peaks.append(global_frame)
+        
+        print(f"Processed {len(exclude_peaks)} 'dont_know' peaks to exclude")
+        if skipped_count > 0:
+            print(f"Skipped {skipped_count} peaks (file not found or out of bounds)")
+        
+        if len(exclude_peaks) > 0:
+            return np.array(exclude_peaks, dtype=np.int64)
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"Error loading dont_know peaks: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def load_manual_blink_labels_and_add_to_gt(csv_filepath, file_frame_mapping, edge_margin=10):
+    """Load manual blink labels from CSV and convert to global frame positions.
+    
+    Args:
+        csv_filepath: Path to manual_blink_labels.csv
+        file_frame_mapping: Dict mapping (run_path, tar_id, side) to (start_frame, end_frame)
+        edge_margin: Number of frames from beginning/end of each recording to exclude (default: 10)
+    
+    Returns:
+        Array of global frame positions for manually labeled blinks, or None if file not found
+    """
+    if not Path(csv_filepath).exists():
+        print(f"Manual blink labels CSV not found: {csv_filepath}")
+        return None
+    
+    try:
+        # Load CSV
+        manual_labels_df = pd.read_csv(csv_filepath)
+        print(f"Loaded {len(manual_labels_df)} manual labels from CSV")
+        
+        # Show label distribution
+        label_counts = manual_labels_df['label'].value_counts()
+        print(f"\nLabel distribution:")
+        for label, count in label_counts.items():
+            print(f"  {label}: {count}")
+        
+        # Filter for blink labels only
+        blink_labels = manual_labels_df[manual_labels_df['label'] == 'blink'].copy()
+        print(f"\nFound {len(blink_labels)} blink labels to add to GT")
+        
+        if len(blink_labels) == 0:
+            return None
+        
+        # Convert to global frame positions
+        new_gt_peaks = []
+        skipped_count = 0
+        skipped_edge_count = 0
+        
+        for idx, row in blink_labels.iterrows():
+            run_path = row['run_path']
+            tar_id = row['tar_id']
+            side = row['side']
+            peak_frame_25fps = int(row['peak_frame_25fps'])
+            
+            # Look up the file in our mapping
+            key = (run_path, tar_id, side)
+            if key not in file_frame_mapping:
+                print(f"Warning: File not found in mapping: {key}")
+                skipped_count += 1
+                continue
+            
+            start_frame, end_frame = file_frame_mapping[key]
+            file_length = end_frame - start_frame
+            
+            # Filter out peaks within edge_margin frames from beginning or end of recording
+            if peak_frame_25fps < edge_margin or peak_frame_25fps >= (file_length - edge_margin):
+                skipped_edge_count += 1
+                continue
+            
+            # Calculate global frame position
+            global_frame = start_frame + peak_frame_25fps
+            
+            # Validate frame is within bounds
+            if global_frame < start_frame or global_frame >= end_frame:
+                print(f"Warning: Peak frame {peak_frame_25fps} out of bounds for file {run_path}")
+                print(f"  File frames: [{start_frame}, {end_frame})")
+                print(f"  Global frame: {global_frame}")
+                skipped_count += 1
+                continue
+            
+            new_gt_peaks.append(global_frame)
+        
+        print(f"Processed {len(new_gt_peaks)} new GT peaks from manual labels")
+        print(f"Skipped {skipped_count} peaks (file not found or out of bounds)")
+        print(f"Skipped {skipped_edge_count} peaks (within {edge_margin} frames of recording edges)")
+        
+        if len(new_gt_peaks) > 0:
+            return np.array(new_gt_peaks, dtype=np.int64)
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"Error loading manual blink labels: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def load_manual_gt_peaks(filepath="final_gt_peaks.pkl", convert_from_30fps_to_25fps=False):
+    """Load manually edited GT peaks from pickle file.
+    
+    Args:
+        filepath: Path to manual GT peaks file
+        convert_from_30fps_to_25fps: If True, converts peak indices from 30fps to 25fps (divide by 1.2)
+    
+    Returns array of peak indices (in concatenated format).
+    """
     import pickle
     from pathlib import Path
     
@@ -347,7 +514,14 @@ def load_manual_gt_peaks(filepath="final_gt_peaks.pkl"):
     try:
         with open(filepath, 'rb') as f:
             manual_peaks = pickle.load(f)
-        print(f"✓ Loaded {len(manual_peaks)} manually edited GT peaks from {filepath}")
+        
+        # Convert from 30fps to 25fps if needed (peak editor saves at 30fps but blendshapes are 25fps)
+        if convert_from_30fps_to_25fps:
+            manual_peaks = (manual_peaks / 1.2).astype(np.int64)
+            print(f"✓ Loaded {len(manual_peaks)} manually edited GT peaks from {filepath} (converted from 30fps to 25fps)")
+        else:
+            print(f"✓ Loaded {len(manual_peaks)} manually edited GT peaks from {filepath}")
+        
         return manual_peaks
     except Exception as e:
         print(f"Error loading manual GT peaks: {e}")
@@ -393,7 +567,7 @@ def load_removed_peaks(filepath="removed_peaks.pkl", convert_from_30fps_to_25fps
         print(f"Error loading removed peaks: {e}")
         return None
 
-def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents, manual_gt_peaks=None):
+def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, gt_th, significant_gt_movenents, manual_gt_peaks=None, edge_margin=10, file_boundaries=None, exclude_pred_peaks=None):
     TPR_lst = []
     FNR_lst = []
     FPR_lst = []
@@ -403,7 +577,7 @@ def run_blink_analysis(th_list, blendshapes_list, pred_blends_list, quantizer, g
         analyzer = BlinkAnalyzer()
         # gt_th = 0
         # model_th = 0.01
-        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th,model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer, significant_gt_movenents=significant_gt_movenents, manual_gt_peaks=manual_gt_peaks)
+        blink_analysis_model = analyzer.analyze_blinks(gt_th=gt_th,model_th=model_th, blendshapes_list=blendshapes_list, pred_blends_list=pred_blends_list, max_offset=quantizer, significant_gt_movenents=significant_gt_movenents, manual_gt_peaks=manual_gt_peaks, edge_margin=edge_margin, file_boundaries=file_boundaries, exclude_pred_peaks=exclude_pred_peaks)
         # _, fig = list(blink_analysis_model['plots'].items())[1] 
         # fig.show()
         matched_gt = len(blink_analysis_model['matches']['matched_gt'])
@@ -1553,6 +1727,8 @@ def main():
     all_significant_gt_movenents = []
     all_significant_pred_movenents = []
     all_significant_pred_model2_movenents = []
+    successfully_loaded_tuples = []  # Track which files were successfully loaded
+    file_frame_mapping = {}  # Map (run_path, tar_id, side) to (start_frame, end_frame)
     
     # Process each file
     for run_path, tar_id, side in tqdm(run_path_tar_id_side_tuples, desc="Loading files"):
@@ -1625,17 +1801,25 @@ def main():
         significant_pred_model2_movenents = significant_gt_movenents #get_significant_movenents_mask(pred_blendshapes_model2_smooth[:-1,:], threshold_factor=THRESHOLD_FACTOR)
         
         # Store data
+        start_frame = current_frame
+        num_frames = gt_blendshapes.shape[0]
+        end_frame = start_frame + num_frames
+        
+        # Add to file frame mapping
+        file_frame_mapping[(run_path, tar_id, side)] = (start_frame, end_frame)
+        
         all_gt_blendshapes.append(gt_blendshapes)
         all_diff_gt_blendshapes.append(diff_gt_blendshapes)
         all_diff_pred_blendshapes.append(diff_pred_blendshapes)
         all_pred_blendshapes.append(pred_blendshapes)
         all_diff_pred_blendshapes_model2.append(diff_pred_blendshapes_model2)
         all_pred_blendshapes_model2.append(pred_blendshapes_model2)
-        current_frame += gt_blendshapes.shape[0]
+        current_frame = end_frame
         file_boundaries.append(current_frame)
         all_significant_gt_movenents.append(significant_gt_movenents)
         all_significant_pred_movenents.append(significant_pred_movenents)
         all_significant_pred_model2_movenents.append(significant_pred_model2_movenents)
+        successfully_loaded_tuples.append((run_path, tar_id, side))
     
     # Remove last boundary (end of last file)
     if file_boundaries:
@@ -1906,7 +2090,7 @@ def main():
         
         gt_th = 0.06
         quantizer = 8
-        dense_region = np.linspace(0, 10, 30, endpoint=True)
+        dense_region = np.linspace(-0.5, 6.5, 350, endpoint=True)
         # sparse_region1 = np.linspace(-10, -1, 2, endpoint=True)
         # sparse_region2 = np.linspace(-1, 0, 2, endpoint=False)
         # sparse_region3 = np.linspace(0.1, 3, 2, endpoint=True)
@@ -1919,16 +2103,64 @@ def main():
         manual_gt_peaks = None
         if USE_MANUAL_GT_PEAKS:
             print("\n" + "="*80)
-            print("LOADING MANUALLY EDITED GT PEAKS")
+            print("LOADING MANUALLY EDITED GT PEAKS AND MANUAL BLINK LABELS")
             print("="*80)
+            
+            # First, try to load existing manual GT peaks from pickle file
             manual_gt_peaks = load_manual_gt_peaks(MANUAL_GT_PEAKS_FILE)
             if manual_gt_peaks is not None:
-                print(f"✓ Using manually edited GT peaks for analysis")
+                print(f"✓ Loaded {len(manual_gt_peaks)} GT peaks from {MANUAL_GT_PEAKS_FILE}")
             else:
-                print(f"✗ Manual GT peaks not found, falling back to automatic detection")
+                print(f"  No existing manual GT peaks file found")
+            
+            # Then, load and add manual blink labels from CSV
+            print(f"\nLoading manual blink labels from CSV...")
+            manual_blink_peaks = load_manual_blink_labels_and_add_to_gt(
+                MANUAL_BLINK_LABELS_CSV, 
+                file_frame_mapping
+            )
+            
+            if manual_blink_peaks is not None:
+                print(f"✓ Loaded {len(manual_blink_peaks)} new GT peaks from manual blink labels CSV")
+                
+                # Combine with existing manual GT peaks
+                if manual_gt_peaks is not None:
+                    # Merge both sources
+                    combined_peaks = np.concatenate([manual_gt_peaks, manual_blink_peaks])
+                    combined_peaks = np.unique(combined_peaks)  # Remove duplicates and sort
+                    print(f"\n✓ Combined total: {len(combined_peaks)} GT peaks")
+                    print(f"  - From pickle file: {len(manual_gt_peaks)}")
+                    print(f"  - From CSV: {len(manual_blink_peaks)}")
+                    print(f"  - After deduplication: {len(combined_peaks)}")
+                    manual_gt_peaks = combined_peaks
+                else:
+                    # Only CSV peaks available
+                    manual_gt_peaks = manual_blink_peaks
+                    print(f"✓ Using {len(manual_gt_peaks)} GT peaks from CSV only")
+            else:
+                print(f"  No manual blink labels found in CSV")
+            
+            if manual_gt_peaks is not None:
+                print(f"\n✓ Using {len(manual_gt_peaks)} manually edited GT peaks for analysis")
+            else:
+                print(f"\n✗ No manual GT peaks found, falling back to automatic detection")
+        
+        # Load 'dont_know' labeled peaks to exclude from predictions
+        print(f"\n" + "="*80)
+        print("LOADING 'DONT_KNOW' PEAKS TO EXCLUDE FROM PREDICTIONS")
+        print("="*80)
+        exclude_pred_peaks = load_dont_know_peaks_to_exclude(
+            MANUAL_BLINK_LABELS_CSV,
+            file_frame_mapping
+        )
+        
+        if exclude_pred_peaks is not None:
+            print(f"✓ Will exclude {len(exclude_pred_peaks)} 'dont_know' peaks from prediction analysis")
+        else:
+            print(f"  No 'dont_know' peaks to exclude")
         
         print(f"\nRunning blink analysis for {MODEL_NAME}...")
-        TPR_lst, FNR_lst, FPR_lst, blink_analysis_model = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes, quantizer, gt_th, all_significant_gt_movenents, manual_gt_peaks=manual_gt_peaks)
+        TPR_lst, FNR_lst, FPR_lst, blink_analysis_model = run_blink_analysis(th_list, all_gt_blendshapes, all_pred_blendshapes, quantizer, gt_th, all_significant_gt_movenents, manual_gt_peaks=manual_gt_peaks, edge_margin=EDGE_MARGIN, file_boundaries=file_boundaries, exclude_pred_peaks=exclude_pred_peaks)
         
         # Save concatenated data for peak editor (with timestamp to avoid overwriting)
         print("\n" + "="*80)
@@ -1968,14 +2200,14 @@ def main():
         # x_range_min = max(0, min_fpr - 0.1 * fpr_range) if fpr_range > 0 else 0
         
         fig_roc.update_layout(
-            title=dict(text=f'ROC Curve - Blink Detection', font=dict(size=30)), 
-            xaxis_title=dict(text='# False blinks in minute', font=dict(size=20)), 
-            # xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=20)), 
-            yaxis_title=dict(text='True Positive Rate (%)', font=dict(size=20)), 
-            # xaxis=dict(range=[x_range_min, x_range_max], tickfont=dict(size=16)), 
-            yaxis=dict(range=[0, 100], tickfont=dict(size=16)), 
+            title=dict(text=f'ROC Curve - Blink Detection', font=dict(size=42)), 
+            xaxis_title=dict(text='# False blinks in minute', font=dict(size=30)), 
+            # xaxis_title=dict(text='False Positive Rate (%)', font=dict(size=30)), 
+            yaxis_title=dict(text='True Positive Rate (%)', font=dict(size=30)), 
+            xaxis=dict(tickfont=dict(size=24)), 
+            yaxis=dict(range=[0, 100], tickfont=dict(size=24)), 
             showlegend=True, 
-            legend=dict(font=dict(size=18)), 
+            legend=dict(font=dict(size=24)), 
             width=1400,  # Increased width for better visibility
             height=800   # Increased height as well
         )

@@ -12,7 +12,8 @@ from scipy.stats import zscore
 def _detect_blink_peaks(signal: np.ndarray, 
                         signal_diff: np.ndarray,
                         height_threshold: float = 0.5,
-                        min_prominence: float = 1.0) -> np.ndarray:
+                        min_prominence: float = 1.0,
+                        edge_margin: int = 10) -> np.ndarray:
     """
     Detect blink peaks using only z-score of the signal.
     
@@ -26,11 +27,13 @@ def _detect_blink_peaks(signal: np.ndarray,
         Minimum height of peak in z-score units
     min_prominence : float
         Minimum prominence of peak in z-score units
+    edge_margin : int
+        Number of frames from edges to exclude (default: 10)
     
     Returns:
     --------
     peaks : np.ndarray
-        Indices of detected peaks
+        Indices of detected peaks (excluding edge regions)
     """
     # Smooth the signal using Savitzky-Golay filter before peak detection
     signal_smooth = savgol_filter(signal, window_length=9, polyorder=2, mode='interp')
@@ -41,7 +44,46 @@ def _detect_blink_peaks(signal: np.ndarray,
     # Find peaks in the z-score signal
     peaks, _ = find_peaks(signal_zscore, height=height_threshold, prominence=min_prominence)
     
-    return peaks
+    # Filter out peaks within edge_margin frames from beginning or end
+    signal_length = len(signal)
+    valid_peaks = peaks[(peaks >= edge_margin) & (peaks < signal_length - edge_margin)]
+    
+    return valid_peaks
+
+
+def _filter_peaks_at_file_boundaries(peaks: np.ndarray, file_boundaries: list, edge_margin: int = 10) -> np.ndarray:
+    """
+    Filter out peaks that are within edge_margin frames of any file boundary.
+    
+    Parameters:
+    -----------
+    peaks : np.ndarray
+        Array of peak indices in the concatenated signal
+    file_boundaries : list
+        List of frame indices where files end (cumulative frame counts)
+    edge_margin : int
+        Number of frames from boundaries to exclude
+    
+    Returns:
+    --------
+    filtered_peaks : np.ndarray
+        Peaks with boundary regions removed
+    """
+    if file_boundaries is None or len(file_boundaries) == 0:
+        return peaks
+    
+    # Create a mask for valid peaks
+    valid_mask = np.ones(len(peaks), dtype=bool)
+    
+    # Check each peak against all file boundaries
+    for i, peak in enumerate(peaks):
+        # Check if peak is within edge_margin of any boundary
+        for boundary in file_boundaries:
+            if abs(peak - boundary) < edge_margin:
+                valid_mask[i] = False
+                break
+    
+    return peaks[valid_mask]
 
 
 def _match_peaks(gt_signal: np.ndarray,
@@ -53,7 +95,10 @@ def _match_peaks(gt_signal: np.ndarray,
                 model_th: float = 0.5,
                 gt_prominence: float = 1.0,
                 pred_prominence: float = 1.0,
-                manual_gt_peaks: np.ndarray = None) -> Dict:
+                manual_gt_peaks: np.ndarray = None,
+                edge_margin: int = 10,
+                file_boundaries: list = None,
+                exclude_pred_peaks: np.ndarray = None) -> Dict:
     """
     Match peaks between ground truth and prediction using z-score peaks.
     
@@ -78,15 +123,39 @@ def _match_peaks(gt_signal: np.ndarray,
     pred_prominence : float
         Prominence threshold for prediction z-score peaks
     manual_gt_peaks : np.ndarray, optional
-        Pre-detected GT peaks (if provided, skips automatic detection)
+        Pre-detected GT peaks (if provided, skips automatic detection but still applies edge filtering)
+    edge_margin : int
+        Number of frames from edges to exclude (default: 10)
+    file_boundaries : list, optional
+        List of frame indices where files end (for filtering peaks at file boundaries)
+    exclude_pred_peaks : np.ndarray, optional
+        Prediction peak indices to exclude (e.g., 'dont_know' labeled peaks)
     """
     # Use manual GT peaks if provided, otherwise detect automatically
     if manual_gt_peaks is not None:
-        gt_peaks = manual_gt_peaks
+        # Apply edge filtering to manual GT peaks (only at concatenated signal edges)
+        signal_length = len(gt_signal)
+        gt_peaks = manual_gt_peaks[(manual_gt_peaks >= edge_margin) & (manual_gt_peaks < signal_length - edge_margin)]
+        # Also filter at file boundaries
+        gt_peaks = _filter_peaks_at_file_boundaries(gt_peaks, file_boundaries, edge_margin)
     else:
-        gt_peaks = _detect_blink_peaks(gt_signal, gt_diff, height_threshold=gt_th, min_prominence=gt_prominence)
+        gt_peaks = _detect_blink_peaks(gt_signal, gt_diff, height_threshold=gt_th, min_prominence=gt_prominence, edge_margin=edge_margin)
+        # Filter at file boundaries
+        gt_peaks = _filter_peaks_at_file_boundaries(gt_peaks, file_boundaries, edge_margin)
     
-    pred_peaks = _detect_blink_peaks(pred_signal, pred_diff, height_threshold=model_th, min_prominence=pred_prominence)
+    pred_peaks = _detect_blink_peaks(pred_signal, pred_diff, height_threshold=model_th, min_prominence=pred_prominence, edge_margin=edge_margin)
+    # Filter prediction peaks at file boundaries
+    pred_peaks = _filter_peaks_at_file_boundaries(pred_peaks, file_boundaries, edge_margin)
+    
+    # Filter out manually excluded prediction peaks (e.g., 'dont_know' labels)
+    if exclude_pred_peaks is not None and len(exclude_pred_peaks) > 0:
+        # For each excluded peak, find and remove nearby prediction peaks (within max_offset)
+        exclude_mask = np.ones(len(pred_peaks), dtype=bool)
+        for exclude_peak in exclude_pred_peaks:
+            distances = np.abs(pred_peaks - exclude_peak)
+            close_peaks = distances <= max_offset
+            exclude_mask &= ~close_peaks
+        pred_peaks = pred_peaks[exclude_mask]
     
     matched_gt = []
     matched_pred = []
@@ -114,10 +183,10 @@ def _match_peaks(gt_signal: np.ndarray,
             unmatched_gt.append(gt_peak)
     
     return {
-        'matched_gt': matched_gt,
-        'matched_pred': matched_pred,
-        'unmatched_gt': unmatched_gt,
-        'unmatched_pred': unmatched_pred,
+        'matched_gt': np.array(matched_gt, dtype=np.int64),
+        'matched_pred': np.array(matched_pred, dtype=np.int64),
+        'unmatched_gt': np.array(unmatched_gt, dtype=np.int64),
+        'unmatched_pred': np.array(unmatched_pred, dtype=np.int64),
         'gt_peaks': gt_peaks,
         'pred_peaks': pred_peaks
     }
@@ -276,7 +345,10 @@ def plot_blink_analysis(gt_concat: np.ndarray,
                        gt_prominence: float = 1.0,
                        pred_prominence: float = 1.0,
                        significant_gt_movenents: np.ndarray = None,
-                       manual_gt_peaks: np.ndarray = None) -> Tuple[Dict[str, go.Figure], Dict]:
+                       manual_gt_peaks: np.ndarray = None,
+                       edge_margin: int = 10,
+                       file_boundaries: list = None,
+                       exclude_pred_peaks: np.ndarray = None) -> Tuple[Dict[str, go.Figure], Dict]:
     """
     Generate comprehensive blink analysis plots.
     
@@ -302,6 +374,12 @@ def plot_blink_analysis(gt_concat: np.ndarray,
         Prominence threshold for GT z-score peaks (default 1.0)
     pred_prominence : float
         Prominence threshold for prediction z-score peaks (default 1.0)
+    edge_margin : int
+        Number of frames from edges to exclude (default: 10)
+    file_boundaries : list, optional
+        List of frame indices where files end (for filtering peaks at file boundaries)
+    exclude_pred_peaks : np.ndarray, optional
+        Prediction peak indices to exclude (e.g., 'dont_know' labeled peaks)
     """
     time_gt = np.arange(len(gt_concat)) / sample_rate
     time_pred = np.arange(len(pred_concat)) / sample_rate
@@ -328,7 +406,10 @@ def plot_blink_analysis(gt_concat: np.ndarray,
         model_th=model_th,
         gt_prominence=gt_prominence,
         pred_prominence=pred_prominence,
-        manual_gt_peaks=manual_gt_peaks
+        manual_gt_peaks=manual_gt_peaks,
+        edge_margin=edge_margin,
+        file_boundaries=file_boundaries,
+        exclude_pred_peaks=exclude_pred_peaks
     )
     
     # Generate plots

@@ -24,7 +24,10 @@ class BlinkAnalyzer:
                       gt_prominence: float = 1.0,
                       pred_prominence: float = 1.0,
                       significant_gt_movenents: np.ndarray = None,
-                      manual_gt_peaks: np.ndarray = None) -> Dict:
+                      manual_gt_peaks: np.ndarray = None,
+                      edge_margin: int = 10,
+                      file_boundaries: list = None,
+                      exclude_pred_peaks: np.ndarray = None) -> Dict:
         """
         Analyze blink patterns in ground truth and predicted data.
         If pred_blends_diff_list is provided, use it for differential analysis instead of computing derivatives.
@@ -89,7 +92,10 @@ class BlinkAnalyzer:
             gt_prominence=gt_prominence,
             pred_prominence=pred_prominence,
             significant_gt_movenents=significant_gt_movenents,
-            manual_gt_peaks=manual_gt_peaks
+            manual_gt_peaks=manual_gt_peaks,
+            edge_margin=edge_margin,
+            file_boundaries=file_boundaries,
+            exclude_pred_peaks=exclude_pred_peaks
         )
         
         return {

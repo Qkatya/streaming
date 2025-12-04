@@ -151,3 +151,4 @@ All scripts use the **same file ordering** from `blinking_split_analysis.py`:
 - Frame numbers: 25fps for blendshapes, 30fps for video
 - Corrections are applied on top of automatic detection or manual pkl peaks
 
+
