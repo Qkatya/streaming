@@ -36,7 +36,7 @@ ROW_INDICES = None
 # ROW_INDICES = list(range(0, 4))#[3663, 3953, 3642, 317, 6117, 1710, 3252, 1820, 3847]
 
 # Random sampling configuration
-NUM_RANDOM_SAMPLES = 1000# None  # Set to None to process all rows, or a number to randomly sample
+NUM_RANDOM_SAMPLES = None  # Set to None to process all rows, or a number to randomly sample
 RANDOM_SEED = 42  # Set seed for reproducibility (None for different samples each run)
 THRESHOLD_FACTOR = 0.25
 
@@ -72,12 +72,12 @@ BLENDSHAPES_TO_PLOT = BLENDSHAPES_ORDERED
 # BLENDSHAPES_TO_PLOT = ['eyeBlinkRight', 'jawOpen', 'mouthFunnel', 'cheekPuff', 'mouthSmileRight']
 
 # Analysis flags - control which metrics to calculate
-CALCULATE_BLINK_METRICS = True  # ROC curve analysis for blink detection
-CALCULATE_CORRELATION_METRICS = False #True  # PCC, L1, L2 on raw predictions
+CALCULATE_BLINK_METRICS = False #True  # ROC curve analysis for blink detection
+CALCULATE_CORRELATION_METRICS = True  # PCC, L1, L2 on raw predictions
 CALCULATE_DIFF_METRICS = False #True  # PCC, L1, L2 on frame-to-frame differences
 
 # Plotting mode flags
-PLOT_BY_CATEGORIES = True#False  # If True, plot by predefined categories; If False, plot all blendshapes above threshold
+PLOT_BY_CATEGORIES = False  # If True, plot by predefined categories; If False, plot all blendshapes above threshold
 VELOCITY_AGREEMENT_THRESHOLD = 80.0  # Minimum velocity agreement % to include in the plot (when PLOT_BY_CATEGORIES=False)
 
 # ============================================================================
@@ -1646,7 +1646,7 @@ def plot_velocity_agreement_above_threshold(metrics1, model1_name, threshold=80.
                 showlegend=True,
                 text=[f'{vel_agree_value:.1f}%'],
                 textposition='outside',
-                textfont=dict(size=10)
+                textfont=dict(size=20)
             )
         )
     
@@ -1655,16 +1655,20 @@ def plot_velocity_agreement_above_threshold(metrics1, model1_name, threshold=80.
         title_text=f"Velocity Agreement (%)",# - Blendshapes Above {threshold}%",
         title_x=0.5,
         title_xanchor='center',
-        title_font_size=18,
-        height=600,
-        width=max(800, len(filtered_blendshapes) * 60),  # Dynamic width based on number of bars
+        title_font_size=42,
+        height=800,
+        width=max(1200, len(filtered_blendshapes) * 80),  # Dynamic width based on number of bars
         yaxis_title="Velocity Agreement (%)",
+        yaxis_title_font=dict(size=30),
         xaxis_title="Blendshapes",
+        xaxis_title_font=dict(size=30),
         xaxis_tickangle=45,
+        xaxis_tickfont=dict(size=24),
+        yaxis_tickfont=dict(size=24),
         showlegend=True,
         legend=dict(
             title="Blendshapes",
-            font=dict(size=10),
+            font=dict(size=24),
             yanchor="top",
             y=1,
             xanchor="left",
